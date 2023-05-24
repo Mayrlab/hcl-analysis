@@ -1,0 +1,77 @@
+---
+title: "Export Cleavage Site Sequences"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Initialization
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(plyranges)
+library(tidyverse)
+library(magrittr)
+```
+
+## Parameters
+```{r params}
+SEQ_LENGTH = 400
+
+FILE_UTROME = "data/granges/utrome_gr_txs.e20.t5.gc39.pas3.f0.9999.w500.Rds"
+FILE_SEQS = "data/csv/utrome_cleavage_seqs.e20.t5.gc39.pas3.f0.9999.csv.gz"
+```
+
+
+# Load Data
+## Human UTRome Transcripts
+```{r load_txs, message=FALSE, warning=FALSE}
+## Load all transcripts
+gr_txs <- readRDS(FILE_UTROME)
+```
+
+# Process Sites
+## Extract and Export Seq
+```{r export_seqs}
+## center around cleavage sites
+gr_cleavage <- gr_txs %>%
+  anchor_3p %>%
+  mutate(width=SEQ_LENGTH) %>%
+  shift_downstream(SEQ_LENGTH/2) %>%
+  set_names(.$transcript_id)
+
+## extract sequences
+df_seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_cleavage) %>%
+    DataFrame() %>% as_tibble(rownames="transcript_id") %>%
+    set_colnames(c("transcript_id", "seqs"))
+    
+## export sequences
+write_csv(df_seqs, FILE_SEQS)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

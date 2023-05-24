@@ -1,0 +1,248 @@
+---
+title: "APARENT2 Cleavage Site Scores"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+We compare APARENT2 scores for GENCODE and UTRome cleavage sites.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+```
+
+## Parameters
+```{r params}
+N_CTS_LOW = 10
+N_CTS_HIGH = 80
+
+FILE_APARENT = "data/aparent2/utrome_cleavage_sites.e30.t5.gc39.w205.l11.csv.gz"
+FILE_IP = "data/aparent2/likely_ip_sites.e30.t5.gc39.w205.l11.csv.gz"
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_scores <- read_csv(FILE_APARENT)
+
+df_ip <- read_csv(FILE_IP) %>%
+    mutate(origin="IP")
+
+df_combined <- bind_rows(df_scores, df_ip)
+```
+
+## Preprocessing
+```{r prepare_data}
+label_origin = c("GENCODE"="Common",
+                 "UTRome"="UTRome\nOnly",
+                 "GENCODE_only"="GENCODE\nOnly",
+                 "IP"="IP")
+df_scores %<>%
+    mutate(origin_split=ifelse(n_celltypes == 0, "GENCODE_only", origin),
+           origin_split=factor(label_origin[origin_split], levels=label_origin),
+           n_celltypes_bin=case_when(
+               n_celltypes == 0 ~ "none",
+               n_celltypes < N_CTS_LOW ~ "low",
+               n_celltypes < N_CTS_HIGH ~ "mid",
+               TRUE ~ "high"
+           ) %>% factor(levels=c("none", "low", "mid", "high")),
+           n_celltypes_bin2=case_when(
+               n_celltypes == 0 ~ "none",
+               n_celltypes < N_CTS_LOW ~ "< 10",
+               TRUE ~ "10+"
+           ) %>% factor(levels=c("none", "< 10", "10+")))
+
+df_combined %<>%
+    mutate(origin_split=ifelse(origin != "IP" & n_celltypes == 0, "GENCODE_only", origin),
+           origin_split=factor(label_origin[origin_split], levels=label_origin),
+           n_celltypes_bin=case_when(
+               n_celltypes == 0 ~ "none",
+               n_celltypes < N_CTS_LOW ~ "low",
+               n_celltypes < N_CTS_HIGH ~ "mid",
+               TRUE ~ "high"
+           ) %>% factor(levels=c("none", "low", "mid", "high")))
+```
+
+# Analysis
+## Narrow Probabilities
+
+```{r plot_narrow, fig.width=3, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=likelihood_narrow_w30)) +
+    geom_boxplot(outlier.alpha=0) +
+    labs(x=NULL, y="APARENT2 cleavage probability (30 nt)") +
+    theme_bw()
+
+ggsave("img/sq/fig1d-aparent2-scores-main.pdf", width=3, height=4, dpi=300)
+```
+
+```{r plot_narrow_fine, fig.width=8, fig.height=4}
+df_scores %>%
+    mutate(origin_fine=case_when(
+        utr_type == "single" & n_celltypes > 0 ~ "Common\n(single)",
+        utr_type == "single" ~ "GENCODE\nOnly\n(single)",
+        is_ipa & n_celltypes == 0 ~ "GENCODE\nOnly\n(intronic)",
+        is_ipa & origin_split == "Common" ~ "Common\n(intronic)",
+        is_ipa ~ "UTRome\nOnly\n(intronic)",
+        is_distal & n_celltypes == 0 ~ "GENCODE\nOnly\n(distal)",
+        is_distal & origin_split == "Common" ~ "Common\n(distal)",
+        is_distal ~ "UTRome\nOnly\n(distal)",
+        n_celltypes == 0 ~ "GENCODE\nOnly\n(proximal)",
+        origin_split == "Common" ~ "Common\n(proximal)",
+        TRUE ~ "UTRome\nOnly\n(proximal)"
+    )) %T>% {
+        df_counts <<- count(., origin_fine, name="n_genes")
+    } %>%
+    ggplot(aes(x=origin_fine)) +
+    geom_boxplot(aes(y=likelihood_narrow_w30), outlier.alpha=0) +
+    geom_label(data=df_counts, aes(label=n_genes, x=origin_fine, y=-0.05)) +
+    labs(x=NULL, y="APARENT2 cleavage probability (30 nt)") +
+    theme_bw()
+```
+
+
+
+```{r plot_narrow_ip, fig.width=3, fig.height=4}
+df_combined %>%
+    ggplot(aes(x=origin_split, y=likelihood_narrow_w30)) +
+    geom_boxplot(outlier.alpha=0) +
+    labs(x=NULL, y="APARENT2 cleavage probability (30 nt)") +
+    theme_bw()
+```
+
+```{r plot_narrow_type, fig.width=5, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=likelihood_narrow_w30, fill=utr_type)) +
+    geom_boxplot(outlier.alpha=0) +
+    scale_fill_grey(start=0.5, end=0.7) +
+    labs(x=NULL, y="APARENT2 cleavage probability (30 nt)",
+         fill="UTR type") +
+    theme_bw()
+```
+
+```{r plt_n_celltypes, fig.width=4, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=likelihood_narrow_w30, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0, position=position_dodge(preserve = "single", width=0.9), width=0.8) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y="APARENT2 cleavage probability (30 nt)",
+         fill="Cell Types\nExpressed") +
+    theme_bw()
+
+ggsave("img/sq/fig1d-aparent2-scores-som3.pdf", width=4, height=4, dpi=300)
+```
+
+```{r plt_n_celltypes_bin2, fig.width=4, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=likelihood_narrow_w30, fill=n_celltypes_bin2)) +
+    geom_boxplot(outlier.alpha=0, position=position_dodge(preserve = "single", width=0.9), width=0.8) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y="APARENT2 cleavage probability (30 nt)",
+         fill="Cell Types\nExpressed") +
+    theme_bw()
+
+ggsave("img/sq/fig1d-aparent2-scores-som2.pdf", width=4, height=4, dpi=300)
+```
+
+
+
+```{r plt_n_celltypes_ip}
+df_combined %>%
+    ggplot(aes(x=origin_split, y=likelihood_narrow_w30, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y="APARENT2 cleavage probability (30 nt)",
+         fill="Cell Types\nExpressed") +
+    theme_bw()
+```
+
+
+## Full Probability
+```{r plot_full, fig.width=3, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=likelihood_full)) +
+    geom_boxplot(outlier.alpha=0) +
+    labs(x=NULL, y="APARENT2 cleavage probability (205 nt)") +
+    theme_bw()
+```
+
+
+```{r plot_full_ip, fig.width=3, fig.height=4}
+df_combined %>%
+    ggplot(aes(x=origin_split, y=likelihood_full)) +
+    geom_boxplot(outlier.alpha=0) +
+    labs(x=NULL, y="APARENT2 cleavage probability (205 nt)") +
+    theme_bw()
+```
+
+
+```{r plot_full_type, fig.width=5, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=likelihood_full, fill=utr_type)) +
+    geom_boxplot(outlier.alpha=0) +
+    scale_fill_grey(start=0.5, end=0.7) +
+    labs(x=NULL, y="APARENT2 cleavage probability (205 nt)",
+         fill="UTR type") +
+    theme_bw()
+```
+
+```{r plt_n_celltypes_full}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=likelihood_full, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y="APARENT2 cleavage probability (205 nt)",
+         fill="Cell Types\nExpressed") +
+    theme_bw()
+```
+
+```{r plt_n_celltypes_full_ip}
+df_combined %>%
+    ggplot(aes(x=origin_split, y=likelihood_full, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y="APARENT2 cleavage probability (205 nt)",
+         fill="Cell Types\nExpressed") +
+    theme_bw()
+```
+
+
+# Conclusion
+
+Sites found in common sites have highest cleavage probabilities. UTRome-only sites
+are lower probability, but much higher than GENCODE-only sites not found in any 
+of the HCL cell types.
+
+The IP status appears to unexpectedly high scores in APARENT2.
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

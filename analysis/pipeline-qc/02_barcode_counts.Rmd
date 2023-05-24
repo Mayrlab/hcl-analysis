@@ -1,0 +1,102 @@
+---
+title: "Cell Counts"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Visualize cell counts per sample using the number of passing barcodes.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(ggbeeswarm)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+```
+
+## Functions
+
+```{r methods}
+
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE, warning=FALSE}
+df_cells <- list.files("qc/barcodes", pattern="*.tsv", full.names=TRUE) %>%
+    lapply(function (file) {
+        sample_id <- str_extract(file, "[^/]+$") %>% str_remove("_cell_thresholds.tsv")
+        read_tsv(file, progress=FALSE) %>%
+            mutate(sample_id=sample_id)
+    }) %>%
+    do.call(what=rbind)
+```
+
+
+# Analysis
+
+## First View
+
+```{r fig1, fig.width=3, fig.height=4}
+df_cells %>%
+    ggplot(aes(x="Samples", y=count)) +
+    geom_quasirandom() +
+    scale_y_log10() +
+    labs(x=NULL, y="Passing Barcodes (Cell Count)") +
+    theme_bw()
+```
+
+## Outliers
+
+```{r outliers}
+df_cells %>%
+    filter(count > 3e4 | count < 1e3) %>%
+    arrange(count) %>%
+    knitr::kable()
+```
+
+# Conclusion
+
+<!--
+What was found?
+Clearly state conclusions.
+Was there anything unexpected?
+Are there unanswered questions?
+What should be worked on next?
+-->
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

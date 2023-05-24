@@ -1,0 +1,180 @@
+---
+title: "Extract Cell Whitelist"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+Reformats the XLSX cell annotations file to a TSV, separating sample ID, barcodes,
+and file-friendly samples and cell types.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(readxl)
+```
+
+## Parameters
+```{r params}
+Sys.setenv("VROOM_CONNECTION_SIZE"=100000)
+```
+
+## Functions
+```{r methods}
+#' the `batch` field can be reformatted to (nearly) match the sample_id used by SRA
+#' Example
+#'   input: "AdrenalGland1"
+#'   output: "adrenal-gland-1"
+format_sample_ids <- . %>%
+    ## insert hyphens
+    str_replace_all("(?<=[a-z])(?=[A-Z])", "-") %>%
+    ## convert to lower case
+    str_to_lower %>%
+    ## hypenate final number
+    #str_replace("([0-9]+)$", "-\\1")
+    str_replace("_", "-")
+
+format_cell_type <- . %>%
+    str_to_lower %>%
+    str_replace_all(" |/", "-") %>%
+    str_replace_all("\\+", "p") %>%
+    str_remove_all("\\(|\\)") %>%
+    ## special cases
+    str_remove(fixed("-pre-sertoli-cell")) %>%
+    str_replace(fixed("endothelial-to-mesenchymal-transition"), "emt")
+
+extract_subsample <- . %>%
+    str_extract("[0-9]+$") %>%
+    { ifelse(is.na(.), "", str_c(".", .)) }
+
+extract_sample_id <- . %>%
+    str_remove("[ACGT]{18}") %>%
+    str_remove("\\.$") %>%
+    str_replace(fixed(".."), ".") %>%
+    format_sample_ids()
+
+extract_barcode <- . %>%
+    str_extract("[ACGT]{18}")
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_runs <- read_csv("metadata/hcl-sra-run-table.csv")
+
+df_annots <- read_xlsx("metadata/HCL_Fig1_cell_Info.xlsx", col_types="text")
+```
+
+## Preprocessing
+The sample names assigned to the deposited data do not perfectly match the sample
+names used in the annotations file. Here identified the appropriate assignment by 
+examining the SRA metadata (SRX/SRR) and the sample (SAMN/GSM) information.
+
+We were unable to find a deposit for the sample `AdultOmentum1`.
+
+```{r prepare_data}
+df_annots %<>%
+    mutate(sample_id=extract_sample_id(cellnames),
+           bx=extract_barcode(cellnames),
+           cell_type=format_cell_type(celltype)) %>%
+    
+    ## adjust sample_id's
+    mutate(sample_id=case_when(
+        sample_id == "hesc-1" ~ "embryonic-stem-cell-1",
+        sample_id == "adult-adrenal-gland-2" ~ "adult-adrenal-gland-1",
+        sample_id == "adult-adrenal-gland-3.1" ~ "adult-adrenal-gland-2",
+        sample_id == "adult-spleen-1" ~ "adult-spleen-1.1",
+        sample_id == "adult-spleen-parenchyma-1" ~ "adult-spleen-1.2",
+        sample_id == "adult-liver-4.124" ~ "adult-liver-4.1",
+        sample_id == "adult-liver-4.3" ~ "adult-liver-4.2",
+        sample_id == "adult-ascending-colon-1" ~ "adult-intestine-1",
+        sample_id == "adult-cerebellum-1" ~ "adult-brain-1",
+        sample_id == "adult-duodenum-1" ~ "adult-intestine-2",
+        sample_id == "adult-epityphlon-1" ~ "adult-intestine-3",
+        sample_id == "adult-esophagus-2" ~ "adult-intestine-4",
+        sample_id == "adult-gallbladder-1" ~ "adult-gall-bladder-2",
+        sample_id == "adult-gall-bladder-2.3" ~ "adult-gall-bladder-1",
+        sample_id == "adult-ileum-2" ~ "adult-intestine-5",
+        sample_id == "adult-je-junum-2" ~ "adult-intestine-6",
+        sample_id == "bone-marrow-1" ~ "adult-bone-marrow-1",
+        sample_id == "bone-marrow-2" ~ "adult-bone-marrow-2",
+        sample_id == "peripheral-blood-1" ~ "adult-peripheral-blood-1",
+        sample_id == "fetal-intetsine-3" ~ "fetal-intestine-3",
+        sample_id == "fetal-female-gonald-2" ~ "fetal-female-gonad-2",
+        sample_id == "adult-fallopiantube-1" ~ "adult-fallopian-tube-1",
+        sample_id == "adult-colon-1" ~ "adult-transverse-colon-1",
+        sample_id == "liver-1" ~ "fetal-liver-1.1",
+        sample_id == "liver-2" ~ "fetal-liver-1.2",
+        TRUE ~ sample_id
+    ))
+```
+
+### Annotations without runs
+```{r missing_annots}
+unique(df_annots$sample_id) %>% { .[!(. %in% df_runs$sample_id)] }
+```
+
+### Runs without annotated cells
+```{r missing_runs}
+df_runs$sample_id %>% { .[!(. %in% unique(df_annots$sample_id))] }
+```
+
+We need to merge the FASTQ files for the "adult-temporal-lobe-1.\*" and "adult-liver-1.\*"
+samples.
+
+```{r unmatched_samples}
+idx_unmatched <- c("adult-liver-1.x", "adult-liver-1.y", 
+                "adult-omentum-1",
+                "adult-temporal-lobe-1.x", "adult-temporal-lobe-1.y",
+                "adult-adrenal-gland-3.2")
+
+df_annots %<>% mutate(unmatched=sample_id %in% idx_unmatched)
+
+count(df_annots, unmatched) %>% print()
+filter(df_annots, unmatched) %>% count(cluster, cell_type) %>% arrange(-n)
+```
+
+# Export
+```{r export}
+df_annots %>%
+    mutate(cell_id=str_c(sample_id, bx, sep=".")) %>%
+    select(cell_id, sample_id, bx, stage, batch, donor, cluster, cell_type, unmatched) %>%
+    write_tsv("metadata/hcl_cell_annots.all.tsv.gz")
+
+df_annots %>%
+    filter(!unmatched) %>%
+    mutate(cell_id=str_c(sample_id, bx, sep=".")) %>%
+    select(cell_id, sample_id, bx, stage, batch, donor, cluster, cell_type) %>%
+    write_tsv("metadata/hcl_cell_annots.clean.tsv.gz")
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

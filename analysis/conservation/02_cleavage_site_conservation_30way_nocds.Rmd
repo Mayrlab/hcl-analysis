@@ -1,0 +1,315 @@
+---
+title: "Cleavage Site Conservation - PhastCons 30-way"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Initialization
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(plyranges)
+library(tidyverse)
+library(magrittr)
+library(GenomicScores)
+library(GenomicRanges)
+```
+
+## Parameters
+```{r params}
+WIN_SIZE = 100
+EPSILON = 30
+TPM = 5
+N_CTS_LOW = 10
+N_CTS_HIGH = 80
+
+FILE_GENCODE = "data/gff/gencode.v39.annotation.gff3.gz"
+FILE_UTROME = sprintf("data/granges/utrome_gr_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds", EPSILON, TPM)
+FILE_BED = sprintf("data/bed/celltypes/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
+FILE_BED_UNLIKELY = sprintf("data/bed/cleavage-sites/utrome.unlikely.e%d.t%d.gc39.pas3.f0.9999.bed.gz",
+                            EPSILON, TPM)
+
+PHASTCONS="phastCons30way"
+PHASTCONS_ID=str_c(PHASTCONS,".UCSC.hg38")
+AXIS_LABEL=sprintf("Mean %s score [%d nt]", PHASTCONS, WIN_SIZE)
+
+FILE_OUT=sprintf("data/conservation/df_%s_%dnt_masked.tsv.gz", PHASTCONS, WIN_SIZE)
+```
+
+## Functions
+```{r methods}
+
+```
+
+# Load Data
+## PhastCons Scores
+```{r load_scores}
+phastcons_hg38 <- getGScores(PHASTCONS_ID)
+```
+
+## CDS regions
+```{r load_cds}
+gr_cds <- read_gff(FILE_GENCODE) %>%
+    filter(type == "CDS")
+```
+
+## Cleavage Sites by Cell Type
+```{r load_sites}
+gr_sites <- read_bed(FILE_BED) %>% 
+    `seqlevelsStyle<-`("UCSC") %>%
+    keepStandardChromosomes(pruning.mode="coarse") %>%
+    anchor_center() %>%
+    mutate(width=EPSILON)
+```
+
+## Human UTRome Transcripts
+```{r load_txs, message=FALSE, warning=FALSE}
+## Load all transcripts
+gr_txs <- readRDS(FILE_UTROME)
+
+## focus on cleavage sites
+gr_cleavage <- gr_txs %>%
+    anchor_3p %>%
+    mutate(n_celltypes=count_overlaps_directed(mutate(., width=0), gr_sites)) %>%
+    mutate(width=WIN_SIZE) %>%
+    shift_downstream(WIN_SIZE/2) %>%
+    mutate(origin=ifelse(is_novel, "UTRome", "GENCODE"),
+           origin_ud=case_when(
+               !is_novel ~ "GENCODE",
+               str_detect(transcript_id, "UTR-") ~ "upstream",
+               str_detect(transcript_id, "UTR+") ~ "downstream"
+           )) 
+
+grl_diff <- GenomicRanges::subtract(gr_cleavage, gr_cds)
+idx_valid <- lengths(grl_diff) %>% unlist %>% { which(. == 1) }
+
+gr_cleavage %<>% 
+    `[`(idx_valid) %>%
+    mutate(score=gscores(x=phastcons_hg38, unlist(grl_diff[idx_valid]), scores.only=TRUE))
+```
+
+## Cleavage Sites Marked as Internal Priming
+```{r ip_sites}
+gr_ip <- read_bed(FILE_BED_UNLIKELY) %>%
+    anchor_3p %>%
+    mutate(n_celltypes=count_overlaps_directed(mutate(., width=0), gr_sites)) %>%
+    mutate(width=WIN_SIZE) %>%
+    shift_downstream(WIN_SIZE/2) %>%
+    filter(start >= 0) ## one of the mito positions is too close to end
+
+grl_diff <- GenomicRanges::subtract(gr_ip, gr_cds)
+idx_valid <- lengths(grl_diff) %>% unlist %>% { which(. == 1) }
+
+gr_ip %<>% 
+    `[`(idx_valid) %>%
+    mutate(score=gscores(x=phastcons_hg38, unlist(grl_diff[idx_valid]), scores.only=TRUE),
+           origin="IP")
+```
+
+## Scores
+```{r create_subgroups}
+label_origin = c("GENCODE"="Common",
+                 "UTRome"="UTRome\nOnly",
+                 "GENCODE_only"="GENCODE\nOnly",
+                 "IP"="IP")
+
+df_scores <- as_tibble(gr_cleavage) %>%
+    mutate(origin_split=ifelse(n_celltypes == 0, "GENCODE_only", origin),
+           origin_split=factor(label_origin[origin_split], levels=label_origin),
+           n_celltypes_bin=case_when(
+               n_celltypes == 0 ~ "none",
+               n_celltypes < N_CTS_LOW ~ "low",
+               n_celltypes < N_CTS_HIGH ~ "mid",
+               TRUE ~ "high"
+           ) %>% factor(levels=c("none", "low", "mid", "high")),
+           n_celltypes_bin2=case_when(
+               n_celltypes == 0 ~ "none",
+               n_celltypes < N_CTS_LOW ~ "< 10",
+               TRUE ~ "10+"
+           ) %>% factor(levels=c("none", "< 10", "10+")))
+
+df_combined <- bind_rows(as_tibble(gr_cleavage), as_tibble(gr_ip)) %>%
+    mutate(origin_split=ifelse(origin != "IP" & n_celltypes == 0, "GENCODE_only", origin),
+           origin_split=factor(label_origin[origin_split], levels=label_origin),
+           n_celltypes_bin=case_when(
+               n_celltypes == 0 ~ "none",
+               n_celltypes < N_CTS_LOW ~ "low",
+               n_celltypes < N_CTS_HIGH ~ "mid",
+               TRUE ~ "high"
+           ) %>% factor(levels=c("none", "low", "mid", "high")))
+```
+
+### Export Scores
+```{r export_scores}
+df_scores %>%
+    dplyr::select(transcript_id, score) %>%
+    rename(!!quo_name(PHASTCONS):=score) %>%
+    write_tsv(FILE_OUT)
+```
+
+# Plots
+## GENCODE vs UTRome
+```{r plt_score, fig.width=3, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=score)) +
+    geom_boxplot(outlier.alpha=0) +
+    labs(x=NULL, y=AXIS_LABEL) +
+    theme_bw()
+
+ggsave("img/sq/fig1e-hg38-phastcons30-main.pdf", width=3, height=4, dpi=300)
+```
+
+## Cleavage Site Types
+```{r plt_full_splits, fig.width=8, fig.height=4}
+df_scores %>%
+    mutate(origin_fine=case_when(
+        utr_type == "single" & n_celltypes > 0 ~ "Common\n(single)",
+        utr_type == "single" ~ "GENCODE\nOnly\n(single)",
+        is_ipa & n_celltypes == 0 ~ "GENCODE\nOnly\n(intronic)",
+        is_ipa & origin_split == "Common" ~ "Common\n(intronic)",
+        is_ipa ~ "UTRome\nOnly\n(intronic)",
+        is_distal & n_celltypes == 0 ~ "GENCODE\nOnly\n(distal)",
+        is_distal & origin_split == "Common" ~ "Common\n(distal)",
+        is_distal ~ "UTRome\nOnly\n(distal)",
+        n_celltypes == 0 ~ "GENCODE\nOnly\n(proximal)",
+        origin_split == "Common" ~ "Common\n(proximal)",
+        TRUE ~ "UTRome\nOnly\n(proximal)"
+    )) %T>% {
+        df_counts <<- count(., origin_fine, name="n_genes")
+    } %>%
+    ggplot(aes(x=origin_fine)) +
+    geom_boxplot(aes(y=score), outlier.alpha=0) +
+    geom_label(data=df_counts, aes(label=n_genes, x=origin_fine, y=-0.05)) +
+    labs(x=NULL, y=AXIS_LABEL) +
+    theme_bw()
+```
+
+
+## Extra Cleavage Site Types
+```{r plt_extra_splits, fig.width=12, fig.height=4}
+df_scores %>%
+    group_by(gene_id) %>%
+    mutate(is_gencode_distal=utr_rank == max(utr_rank[!is_novel]),
+           is_extended=origin_ud == 'downstream',
+           is_su=utr_rank == min(utr_rank[!is_ipa]),
+           is_mu=!(is_ipa | is_su | is_gencode_distal | is_extended)) %>%
+    ungroup() %>%
+    mutate(origin_fine=case_when(
+        utr_type == "single" & n_celltypes > 0 ~ "Common\n(single)",
+        utr_type == "single" ~ "GENCODE\nOnly\n(single)",
+        is_ipa & n_celltypes == 0 ~ "GENCODE\nOnly\n(intronic)",
+        is_ipa & origin_split == "Common" ~ "Common\n(intronic)",
+        is_ipa ~ "UTRome\nOnly\n(intronic)",
+        is_gencode_distal & n_celltypes == 0 ~ "GENCODE\nOnly\n(distal)",
+        is_gencode_distal & origin_split == "Common" ~ "Common\n(distal)",
+        is_extended ~ "UTRome\nOnly\n(extended)",
+        is_su & n_celltypes == 0 ~ "GENCODE\nOnly\n(proximal)",
+        is_su & origin_split == "Common" ~ "Common\n(proximal)",
+        is_su ~ "UTRome\nOnly\n(proximal)",
+        is_mu & n_celltypes == 0 ~ "GENCODE\nOnly\n(medial)",
+        is_mu & origin_split == "Common" ~ "Common\n(medial)",
+        TRUE ~ "UTRome\nOnly\n(medial)",
+    )) %T>% {
+        df_counts <<- count(., origin_fine, name="n_genes")
+    } %>%
+    ggplot(aes(x=origin_fine)) +
+    geom_boxplot(aes(y=score), outlier.alpha=0) +
+    geom_label(data=df_counts, aes(label=n_genes, x=origin_fine, y=-0.05)) +
+    labs(x=NULL, y=AXIS_LABEL) +
+    theme_bw()
+```
+
+## Internal Priming
+```{r plot_ip, fig.width=3, fig.height=4}
+df_combined %>%
+    ggplot(aes(x=origin_split, y=score)) +
+    geom_boxplot(outlier.alpha=0) +
+    labs(x=NULL, y=AXIS_LABEL) +
+    theme_bw()
+```
+
+## UTR Type
+```{r plot_type, fig.width=5, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=score, fill=utr_type)) +
+    geom_boxplot(outlier.alpha=0) +
+    scale_fill_grey(start=0.5, end=0.7) +
+    labs(x=NULL, y=AXIS_LABEL,
+         fill="UTR type") +
+    theme_bw()
+```
+
+## Number of Support Celltypes
+```{r plt_n_celltypes, fig.width=4, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=score, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0, position=position_dodge(preserve = "single", width=0.9), width=0.8) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y=AXIS_LABEL,
+         fill="Cell Types\nExpressed") +
+    theme_bw()
+
+ggsave("img/sq/fig1e-hg38-phastcons30-som3.pdf", width=4, height=4, dpi=300)
+```
+
+
+```{r plt_n_celltypes_bin2, fig.width=4, fig.height=4}
+df_scores %>%
+    ggplot(aes(x=origin_split, y=score, fill=n_celltypes_bin2)) +
+    geom_boxplot(outlier.alpha=0, position=position_dodge(preserve = "single", width=0.9), width=0.8) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y=AXIS_LABEL,
+         fill="Cell Types\nExpressed") +
+    theme_bw()
+
+ggsave("img/sq/fig1e-hg38-phastcons30-som2.pdf", width=4, height=4, dpi=300)
+```
+
+
+```{r plt_n_celltypes_counts, fig.width=8, fig.height=4}
+df_scores %T>% {
+        df_counts <<- count(., origin_split, n_celltypes_bin, name="n_genes")
+    } %>%
+    ggplot(aes(x=origin_split, y=score, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0, position=position_dodge(width=0.9)) +
+    geom_label(data=df_counts, aes(label=n_genes, x=origin_split, y=-0.05), 
+               position=position_dodge(width=0.9), show.legend=FALSE) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y=AXIS_LABEL, fill="Cell Types\nExpressed") +
+    theme_bw()
+```
+
+## Supporting Celltypes Internal Priming
+```{r plt_n_celltypes_ip}
+df_combined %>%
+    ggplot(aes(x=origin_split, y=score, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y=AXIS_LABEL, fill="Cell Types\nExpressed") +
+    theme_bw()
+```
+
+```{r plt_n_celltypes_ip_count, fig.width=10, fig.height=4}
+df_combined %T>% {
+        df_counts <<- count(., origin_split, n_celltypes_bin, name="n_genes")
+    } %>%
+    ggplot(aes(x=origin_split, y=score, fill=n_celltypes_bin)) +
+    geom_boxplot(outlier.alpha=0, position=position_dodge(width=0.9)) +
+    geom_label(data=df_counts, aes(label=n_genes, x=origin_split, y=-0.05), 
+               position=position_dodge(width=0.9), show.legend=FALSE) +
+    scale_fill_grey(start=0.3, end=0.9) +
+    labs(x=NULL, y=AXIS_LABEL, fill="Cell Types\nExpressed") +
+    theme_bw()
+```
+
+
+---
+
+# Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

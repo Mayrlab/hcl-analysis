@@ -1,0 +1,134 @@
+---
+title: "HCL Cell Type-Gene Expression "
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This reprocesses some of the Human Cell Landscape data to a format that is more 
+readily usable in R.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(jsonlite)
+library(Matrix)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+```
+
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+annots <- read_json("data/annots/clusterall_markers.json", simplifyVector=TRUE)$data %>%
+    distinct(Cluster, `Cell-type`) %>%
+    mutate(cell_type=str_c(`Cell-type`, " [", Cluster, "]")) %>%
+    select(Cluster, cell_type) %>% deframe()
+
+df_cts <- read_csv("data/counts/HCL_102_average_expression.csv.gz", 
+                progress=FALSE, show_col_types=FALSE) %>%
+    pivot_longer(cols=-1, names_to="cluster", values_to="expression") %>%
+    filter(expression > 0) %>%
+    mutate(cluster=str_remove(cluster, "^Cluster")) %>%
+    mutate(cell_type=factor(annots[cluster]))
+```
+
+## Functions
+
+```{r methods}
+plot_gene <- function (gene, highlight=NULL) {
+    df_cts %>%
+        filter(gene_name == gene) %>%
+        mutate(cell_type=reorder(cell_type, -expression)) %>%
+        { 
+            if (!is.null(highlight)) {
+                mutate(., highlighted=cell_type %in% highlight)
+            } else {
+                mutate(., highlighted=FALSE)
+            }
+        } %>%
+        ggplot(aes(x=cell_type, y=expression, fill=highlighted)) +
+        geom_bar(stat='identity') + 
+        scale_x_discrete(guide=guide_axis(angle=90), drop=FALSE) +
+        scale_y_continuous(expand=expansion(add=c(0,0.25))) +
+        scale_fill_manual(values=c("FALSE"="#888888", "TRUE"="#6666AA")) +
+        labs(x=NULL, y=gene) +
+        guides(fill="none") +
+        theme_bw()
+}
+```
+
+
+# Plots
+
+## FXR1
+
+```{r fig_fxr1, fig.width=12, fig.height=8}
+plot_gene("FXR1", c("hESC [87]"))
+```
+
+## FXR2
+```{r fig_fxr2, fig.width=12, fig.height=8}
+plot_gene("FXR2", c("hESC [87]"))
+```
+
+```{r fig_fmr1, fig.width=12, fig.height=8}
+plot_gene("FMR1", c("hESC [87]"))
+```
+
+```{r fig_sox2, fig.width=12, fig.height=8}
+plot_gene("SOX2", c("hESC [87]"))
+```
+
+# Export Counts
+
+### XLSX
+This is for Excel users.
+```{r export_xlsx}
+df_cts %>%
+    select(gene_name, cell_type, expression) %>%
+    pivot_wider(names_from="cell_type", values_from="expression", values_fill=0.0) %>%
+    writexl::write_xlsx("data/counts/HCL_102_average_expression.xlsx")
+```
+
+### RDS
+```{r export_rds}
+saveRDS(df_cts, "data/counts/HCL_102_average_expression.rds")
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

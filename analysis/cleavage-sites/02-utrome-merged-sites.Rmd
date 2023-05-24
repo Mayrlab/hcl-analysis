@@ -1,0 +1,157 @@
+---
+title: "Merged Length Distributions"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Compare the distributions of merged detection regions in the UTRome annotation 
+across various parameters.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20220404)
+
+FILE_PATH="qc/gff"
+FILE_PATTERN="utrome.merged_lengths.*.tsv.gz"
+```
+
+## Functions
+
+```{r methods}
+
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_lengths <- list.files(FILE_PATH, FILE_PATTERN, full.names=TRUE) %>%
+    map(read_tsv) %>%
+    do.call(what=rbind)
+```
+
+## Preprocessing
+```{r prepare_data}
+
+```
+
+# Analysis
+
+## Merge Count Distribution
+
+```{r fig_merge_ct, fig.width=6, fig.height=5}
+MAX_COUNT=6
+MAX_LABEL="6+"
+df_lengths %>%
+    mutate(n_merged_fct=ifelse(n_merged >= MAX_COUNT, MAX_LABEL, as.character(n_merged))) %>%
+    ggplot(aes(x=n_merged_fct)) +
+    geom_bar(fill='grey', color='black') +
+    facet_grid(rows=vars(min_tpm), cols=vars(epsilon)) +
+    scale_y_continuous(expand=c(0,0,0,1000)) +
+    labs(x="Overlapping Cleavage Sites Merged", y="Count", 
+         title="Merging Distance vs Minimum TPM") +
+    theme_bw()
+```
+
+## Merged Length Distribution
+### Histogram - Raw
+```{r hist_merge_len_raw, fig.width=6, fig.height=5}
+df_lengths %>%
+    ggplot(aes(x=nts_measured)) +
+    geom_histogram(fill='grey', color='black', binwidth=50) +
+    facet_grid(rows=vars(min_tpm), cols=vars(epsilon)) +
+    scale_x_continuous(guide = guide_axis(angle = 90)) +
+    scale_y_continuous(expand=c(0,0,0,1000)) +
+    labs(x="Merged Length", y="Count", 
+         title="Merging Distance vs Minimum TPM") +
+    theme_bw()
+```
+
+### Histogram - Log10
+```{r hist_merge_len_log, fig.width=6, fig.height=5}
+df_lengths %>%
+    ggplot(aes(x=nts_measured)) +
+    geom_histogram(fill='grey', color='black', binwidth=50) +
+    facet_grid(rows=vars(min_tpm), cols=vars(epsilon)) +
+    scale_x_continuous(guide = guide_axis(angle = 90)) +
+    scale_y_log10(expand=c(0,0,0,0.4)) +
+    labs(x="Merged Length", y="Count", 
+         title="Merging Distance vs Minimum TPM") +
+    theme_bw()
+```
+
+
+### Histogram - Truncated
+```{r hist_merge_len_trunc, fig.width=6, fig.height=5}
+NT_BREAKS=c(-Inf, 500, 550,600,650,700,750,800,Inf)
+NT_LABELS=c("< 500", "500-549", "550-599", "600-649", 
+            "650-699", "700-749", "750-799", ">= 800")
+df_lengths %>%
+    ggplot(aes(x=cut(nts_measured, right=FALSE,
+                     breaks=NT_BREAKS,
+                     labels=NT_LABELS))) +
+    geom_bar(fill='grey', color='black') +
+    facet_grid(rows=vars(min_tpm), cols=vars(epsilon)) +
+    scale_x_discrete(guide = guide_axis(angle = 90)) +
+    scale_y_continuous(expand=c(0,0,0,1000)) +
+    labs(x="Merged Length", y="Count", 
+         title="Merging Distance vs Minimum TPM") +
+    theme_bw()
+```
+
+
+### Histogram - Truncated Log10
+```{r hist_merge_len_trunc_log, fig.width=6, fig.height=5}
+NT_BREAKS=c(-Inf, 500, 550,600,650,700,750,800,Inf)
+NT_LABELS=c("< 500", "500-549", "550-599", "600-649", 
+            "650-699", "700-749", "750-799", ">= 800")
+df_lengths %>%
+    ggplot(aes(x=cut(nts_measured, right=FALSE,
+                     breaks=NT_BREAKS,
+                     labels=NT_LABELS))) +
+    geom_bar(fill='grey', color='black') +
+    facet_grid(rows=vars(min_tpm), cols=vars(epsilon)) +
+    scale_x_discrete(guide = guide_axis(angle = 90)) +
+    scale_y_log10(expand=c(0,0,0,0.4)) +
+    labs(x="Merged Length", y="Count", 
+         title="Merging Distance vs Minimum TPM") +
+    theme_bw()
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

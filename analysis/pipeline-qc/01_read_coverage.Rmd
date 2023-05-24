@@ -1,0 +1,159 @@
+---
+title: "Cleavage Site Coverage Distribution"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+Visualization of cleavage site coverage of mapped reads from the Human Cell
+Landscape dataset.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+EPSILONS=c(15,20,25,30,40,50)
+TPMS=c(3,5)
+STRANDS=c("negative"="-", "positive"="+")
+FILE_FORMAT="data/coverage/utrome.%s.e%d.t%d.txt.gz"
+
+df_coverage <- expand_grid(epsilon=EPSILONS, tpm=TPMS, strand=names(STRANDS)) %>%
+    mutate(file=sprintf(FILE_FORMAT, strand, epsilon, tpm))
+```
+
+## Functions
+
+```{r methods}
+load_coverage <- function (file, strand) {
+    read_tsv(file, col_names=c("chr", "pos", "cov"), col_types='cii') %>%
+        mutate(strand=strand)
+}
+
+plot_rank_coverage <- function (df, xmax, ymax) {
+    df %>%
+        mutate(rank=row_number(-cov)) %>%
+        ggplot(aes(x=rank, y=cov, color=strand)) +
+        geom_line() +
+        scale_x_log10(limits=c(1,xmax)) +
+        scale_y_log10(limits=c(1,ymax)) +
+        scale_color_grey(start=0.8, end=0.6) +
+        labs(x="Rank by coverage", y="Read coverage") +
+        guides(color='none') +
+        theme_bw()
+}
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_coverage %<>%
+    mutate(sites=map2(file, STRANDS[strand], load_coverage))
+```
+
+## Preprocessing
+```{r prepare_data}
+df_coverage %<>%
+    mutate(n_reads=map_int(sites, ~ sum(.x$cov)),
+           n_sites=map_int(sites, nrow))
+
+df_coverage %>%
+    select(-c("file", "sites")) %>%
+    knitr::kable()
+```
+
+# Analysis
+## Supporting reads
+```{r plot_cts}
+df_coverage %>%
+    ggplot(aes(x=factor(epsilon), y=n_reads, fill=STRANDS[strand])) +
+    geom_bar(stat="identity") +
+    facet_grid(cols=vars(tpm)) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    scale_fill_grey(start=0.8, end=0.6) +
+    labs(x="Merging distance (nt)", y="Supporting reads", fill="Strand") +
+    theme_bw()
+```
+
+## Cleavage site candidates
+```{r plot_sites}
+df_coverage %>%
+    ggplot(aes(x=factor(epsilon), y=n_sites, fill=STRANDS[strand])) +
+    geom_bar(stat="identity") +
+    facet_grid(cols=vars(tpm)) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    scale_fill_grey(start=0.8, end=0.6) +
+    labs(x="Merging distance (nt)", y="Cleavage site candidates", fill="Strand") +
+    theme_bw()
+```
+
+## Plot sites by ranked coverage
+
+```{r plot_rank_cov, fig.width=8, fig.height=20}
+MAX_READS <- df_coverage$sites %>%
+    map_int(~ max(.x$cov)) %>%
+    max
+
+df_coverage %>%
+    group_by(epsilon,tpm) %>%
+    summarize(sites=list(bind_rows(sites)), 
+              n_sites=sum(n_sites), .groups='drop') %>%
+    arrange(epsilon, tpm) %>%
+    mutate(plt_rank=map(sites, plot_rank_coverage, xmax=max(n_sites), ymax=MAX_READS)) %$%
+    plot_grid(plotlist=plt_rank, labels=str_c(tpm, " TPM\n", epsilon, " nt"), 
+              nrow=length(EPSILONS), ncol=length(TPMS),
+              label_x=0.7, label_size=8)
+```
+
+```{r}
+df_coverage %>%
+    filter(epsilon==20, tpm==3) %>%
+    summarize(sites=map(sites, ~ slice_max(.x, cov, n=15))) %>%
+    unnest(cols='sites') %>%
+    arrange(-cov) %>%
+    select(chr, strand, pos, cov) %>%
+    knitr::kable()
+```
+
+# Conclusion
+
+Slight decreases in site counts as merging distance is increased is consistent with
+the idea that it eliminates local heterogeneity of sites. Generally, there is a 
+balance of positive and negative strand site calls. However, there are a few sites 
+in the negative strand that have extremely high read counts. Among these are some
+PGA genes that are highly expressed in stomach.
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

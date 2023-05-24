@@ -1,0 +1,97 @@
+---
+title: "PolyApredictors Analysis"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Initialization
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(plyranges)
+library(tidyverse)
+library(magrittr)
+library(ggridges)
+```
+
+## Parameters
+```{r params}
+E_POSITION = 200
+
+FILE_UTROME = "data/granges/utrome_gr_txs.e20.t5.gc39.pas3.f0.9999.w500.Rds"
+FILE_POS = "data/csv/utrome_cleavage_pos.e20.t5.gc39.pas3.f0.9999.csv"
+```
+
+
+# Load Data
+```{r load_data, message=FALSE, warning=FALSE}
+df_pos <- read_csv(FILE_POS)
+
+## Load utrs
+gr_txs <- readRDS(FILE_UTROME)
+
+## attach 
+df_txs <- as_tibble(gr_txs) %>%
+    select(transcript_id, transcript_name, gene_name, 
+           utr_name, utr_rank, utr_type, utr_count,
+           strand, width, is_novel, is_ipa, is_proximal, is_distal) %>%
+    left_join(df_pos, by="transcript_id")
+```
+
+# Marginal Plots
+## Novel sites
+```{r plot_novel_box}
+df_txs %>%
+    ggplot(aes(x=is_novel, y=position-E_POSITION)) +
+    geom_boxplot() +
+    coord_flip() +
+    labs(x="Novel", y="Distance from annotated site (nts)") +
+    theme_bw()
+```
+
+```{r plot_novel_ridge}
+df_txs %>%
+    ggplot(aes(y=is_novel, x=position-E_POSITION)) +
+    geom_density_ridges(scale=1.5, calc_ecdf=TRUE, fill='lightgrey',
+                        quantiles = 4, quantile_lines = TRUE) +
+    scale_y_discrete(expand=c(0,0,0,1.2)) +
+    labs(y="Novel", x="Distance from annotated site (nts)") +
+    theme_bw()
+```
+
+```{r plot_novel_hist}
+df_txs %>%
+    ggplot(aes(y=is_novel, x=position-E_POSITION)) +
+    geom_density_ridges(scale=1.5, calc_ecdf=TRUE, fill='lightgrey',
+                        stat = "binline", bins = 151) +
+    scale_y_discrete(expand=c(0,0,0,1.2)) +
+    labs(y="Novel", x="Distance from annotated site (nts)") +
+    theme_bw()
+```
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

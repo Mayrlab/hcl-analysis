@@ -1,0 +1,601 @@
+---
+title: "Cleavage Factor Binding Densities"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+Visualizes cleavage factor binding densities relative to the cleavage sites in 
+the human UTRome annotation.
+
+# Initialization
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(plyranges)
+library(BiocParallel)
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+```
+
+## Parameters
+```{r params}
+EPSILON = 20
+TPM = 5
+WIN_SIZE = 1000
+MIN_SCORE = 0 ## POSTAR score [0-1]
+N_CTS_LOW = 10
+N_CTS_HIGH = 80
+
+DIR_POSTAR = "../crispr-utr/data/postar"
+FILE_UTROME = sprintf("data/granges/utrome_gr_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds",
+                      EPSILON, TPM)
+FILE_BED_UNLIKELY = sprintf("data/bed/cleavage-sites/utrome.unlikely.e%d.t%d.gc39.pas3.f0.9999.bed.gz",
+                            EPSILON, TPM)
+FILE_BED = sprintf("data/bed/celltypes/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
+```
+
+## Functions
+```{r methods}
+## intersects GRanges, returning midpoints of gr_factor intervals
+## relative to the gr_txs intervals
+get_centered_overlaps <- function (gr_factor, gr_txs, name) {
+  grs <- findOverlapPairs(gr_factor, gr_txs)
+  sign <- strand(grs@second) == '+'
+  start <- ifelse(sign, 
+                  start(grs@first) - start(grs@second) - width(grs@second)/2,
+                  start(grs@second) - end(grs@first) + width(grs@second)/2)
+  end <- ifelse(sign,
+                end(grs@first) - start(grs@second) - width(grs@second)/2,
+                start(grs@second) - start(grs@first) + width(grs@second)/2)
+  IRanges(start=start, end=end, names=Rle(name, length(start)))
+}
+
+## plot density from genomic ranges object
+plot_gr_density <- function (gr, RADIUS=300, palette="Set3", title="UTRome") {
+  n_cfs <- gr %>% names %>% unique %>% length
+  cols <- RColorBrewer::brewer.pal(n=n_cfs+2, name=palette)[2:(n_cfs+1)]
+  as.data.frame(gr) %>%
+    mutate(midpoint=(end+start)/2) %>%
+    rename(cleavage_factor=names) %>%
+    ggplot(aes(x=midpoint, color=cleavage_factor)) +
+    stat_density(aes(y=..scaled..), geom='line', position='identity', 
+                 size=1.5, alpha=0.9) +
+    geom_hline(yintercept=0) +
+    geom_vline(xintercept=0, linetype='dashed', color='black') +
+    coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+    scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                       limits=c(-RADIUS - 100, RADIUS+100)) +
+    scale_color_manual(values=cols) +
+    labs(x=sprintf("Distance from Cleavage Site (%s)", title),
+         y="Relative Density", color="Factor") +
+    guides(color=guide_legend(override.aes=list(alpha=1, size=3))) +
+    theme_minimal_vgrid()
+}
+```
+
+# Load Data
+## Human UTRome Transcripts
+```{r load_txs, message=FALSE, warning=FALSE}
+## Load all transcripts
+gr_txs <- readRDS(FILE_UTROME)
+
+## focus on cleavage sites
+gr_cleavage <- gr_txs %>%
+  anchor_3p %>%
+  mutate(width=WIN_SIZE) %>%
+  shift_downstream(WIN_SIZE/2)
+```
+
+## Cleavage Sites by Cell Type
+```{r load_sites}
+gr_sites <- read_bed(FILE_BED) %>% 
+    `seqlevelsStyle<-`("UCSC") %>%
+    keepStandardChromosomes(pruning.mode="coarse") %>%
+    anchor_center() %>%
+    mutate(width=20)
+```
+
+## Cleavage Sites Marked as Internal Priming
+```{r ip_sites}
+gr_ip <- read_bed(FILE_BED_UNLIKELY) %>%
+  anchor_3p %>%
+  mutate(width=WIN_SIZE) %>%
+  shift_downstream(WIN_SIZE/2)
+```
+
+## Annotation with Number of Supporting Cell Types
+```{r annotate_ct_counts}
+gr_cleavage %<>%
+    mutate(n_celltypes=count_overlaps_directed(gr_cleavage, gr_sites))
+```
+
+## Subgroups
+```{r create_subgroups}
+gr_single <- filter(gr_cleavage, utr_type == "single")
+gr_ipa <- filter(gr_cleavage, is_ipa)
+gr_multi_tandem <- filter(gr_cleavage, utr_type == 'multi', !is_ipa)
+
+gr_gencode <- filter(gr_cleavage, !is_novel)
+gr_novel <- filter(gr_cleavage, is_novel)
+
+gr_proximal_gc <- filter(gr_cleavage, utr_type == 'multi', is_proximal, !is_novel)
+gr_distal_gc <- filter(gr_cleavage, utr_type == 'multi', is_distal, !is_novel)
+
+gr_proximal_novel <- filter(gr_cleavage, utr_type == 'multi', is_proximal, is_novel)
+gr_distal_novel <- filter(gr_cleavage, utr_type == 'multi', is_distal, is_novel)
+
+gr_ctnone_gc <- filter(gr_cleavage, !is_novel, n_celltypes == 0)
+gr_ctlow_gc <- filter(gr_cleavage, !is_novel, n_celltypes > 0, n_celltypes < N_CTS_LOW)
+gr_ctmid_gc <- filter(gr_cleavage, !is_novel, n_celltypes >= N_CTS_LOW, n_celltypes < N_CTS_HIGH)
+gr_cthigh_gc <- filter(gr_cleavage, !is_novel, n_celltypes >= N_CTS_HIGH)
+
+gr_ctlow_novel <- filter(gr_cleavage, is_novel, n_celltypes < N_CTS_LOW)
+gr_ctmid_novel <- filter(gr_cleavage, is_novel, n_celltypes >= N_CTS_LOW, n_celltypes < N_CTS_HIGH)
+gr_cthigh_novel <- filter(gr_cleavage, is_novel, n_celltypes >= N_CTS_HIGH)
+```
+
+
+## Helper Methods
+```{r misc_methods}
+## capture Hg38 SeqInfo
+si_hg38 <- seqinfo(gr_txs)
+
+## loads POSTAR data
+load_postar_sites <- function (rbp, si=si_hg38, min_score=MIN_SCORE) {
+  file <- sprintf("%s/%s.binding.sites", DIR_POSTAR, rbp)
+  gr <- read_tsv(file, col_types='cii__cc___d___________',
+                 col_names=c('seqnames', 'start', 'end', 'strand', 'gene_symbol', 'score')) %>%
+    as_granges %>%
+    filter(score >= min_score) %>%
+    keepStandardChromosomes(species="Homo_sapiens", pruning.mode='coarse')
+  seqlevels(gr) <- seqlevels(si)
+  seqinfo(gr) <- si
+  gr
+}
+```
+
+## POSTAR Data
+```{r load_postar}
+gr_nudt21 <- load_postar_sites("NUDT21")
+gr_cpsf6 <- load_postar_sites("CPSF6")
+
+gr_cpsf1 <- load_postar_sites("CPSF1")
+gr_cpsf2 <- load_postar_sites("CPSF2")
+gr_cpsf3 <- load_postar_sites("CPSF3")
+gr_cpsf4 <- load_postar_sites("CPSF4")
+gr_wdr33 <- load_postar_sites("WDR33")
+gr_fip1l1 <- load_postar_sites("FIP1L1")
+
+gr_cstf2 <- load_postar_sites("CSTF2")
+gr_cstf2t <- load_postar_sites("CSTF2T")
+```
+
+# Plots
+## All Sites
+```{r plot_all, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_cleavage
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues")
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens")
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds")
+```
+
+
+## Single UTR Genes
+```{r plot_single, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_single
+plot_title <- "Single-UTR Genes"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+## Intronic Cleavage Sites
+```{r plot_ipa, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_ipa
+plot_title <- "Intronic Sites"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+## Tandem Multi-UTR Gene Sites
+```{r plot_tandem, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_multi_tandem
+plot_title <- "Tandem Sites"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+
+
+## GENCODE
+### All Cleavage Sites
+```{r plot_gencodel, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_gencode
+plot_title <- "GENCODE"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Proximal Cleavage Sites
+```{r plot_proximal_gc, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_proximal_gc
+plot_title <- "Proximal Sites - GENCODE"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Distal Cleavage Sites
+```{r plot_distal_gc, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_distal_gc
+plot_title <- "Distal Sites - GENCODE"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Cell Types High
+```{r plot_cthigh_gc, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_cthigh_gc
+plot_title <- "Cell Types High - GENCODE"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Cell Types Midrange
+```{r plot_ctmid_gc, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_ctmid_gc
+plot_title <- "Cell Types Midrange - GENCODE"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Cell Types Low
+```{r plot_ctlow_gc, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_ctlow_gc
+plot_title <- "Cell Types Low - GENCODE"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### No Cell Types Supporting
+```{r plot_ctnone_gc, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_ctnone_gc
+plot_title <- "No Cell Types Supporting - GENCODE"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+## Novel
+### All Cleavage Sites
+```{r plot_novel, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_novel
+plot_title <- "Novel Sites"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Proximal Cleavage Sites
+```{r plot_proximal_novel, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_proximal_novel
+plot_title <- "Proximal Sites - novel"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Distal Cleavage Sites
+```{r plot_distal_novel, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_distal_novel
+plot_title <- "Distal Sites - novel"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Cell Types High
+```{r plot_cthigh_novel, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_cthigh_novel
+plot_title <- "Cell Types High - novel"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Cell Types Midrange
+```{r plot_ctmid_novel, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_ctmid_novel
+plot_title <- "Cell Types Midrange - novel"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Cell Types Low
+```{r plot_ctlow_novel, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_ctlow_novel
+plot_title <- "Cell Types Low - novel"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+### Internal Priming
+```{r plot_ip, fig.width=8, fig.height=6, warning=FALSE}
+gr_subset <- gr_ip
+plot_title <- "Internal Priming"
+
+c(get_centered_overlaps(gr_nudt21, gr_subset, "NUDT21"),
+  get_centered_overlaps(gr_cpsf6, gr_subset, "CPSF6")) %>%
+  plot_gr_density(palette="Blues", title=plot_title)
+
+c(get_centered_overlaps(gr_cpsf1, gr_subset, "CPSF1"),
+  get_centered_overlaps(gr_cpsf2, gr_subset, "CPSF2"),
+  get_centered_overlaps(gr_cpsf3, gr_subset, "CPSF3"),
+  get_centered_overlaps(gr_cpsf4, gr_subset, "CPSF4"),
+  get_centered_overlaps(gr_wdr33, gr_subset, "WDR33"),
+  get_centered_overlaps(gr_fip1l1, gr_subset, "FIP1L1")) %>%
+  plot_gr_density(palette="Greens", title=plot_title)
+
+c(get_centered_overlaps(gr_cstf2, gr_subset, "CSTF2"),
+  get_centered_overlaps(gr_cstf2t, gr_subset, "CSTF2τ")) %>%
+  plot_gr_density(palette="Reds", title=plot_title)
+```
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash conda_info, comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

@@ -1,0 +1,103 @@
+---
+title: "HCL Stem Cell DGE Data"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+This document explores what is in the "DGE" data deposited to GEO with the Human
+Cell Landscape.
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(Matrix)
+library(SingleCellExperiment)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+Sys.setenv("VROOM_CONNECTION_SIZE"=1000000)
+GOIs=c("FXR1", "FXR2", "FMR1", "SOX2", "GAPDH", "ACTB")
+```
+
+## Functions
+
+```{r methods}
+
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+mat <- read_tsv("data/dge/GSE134355_RAW/GSM4008674_Embryonic-Stem-Cell_dge.txt.gz") %>%
+    column_to_rownames("GENE") %>%
+    as.matrix() %>%
+    Matrix(sparse=TRUE)
+```
+
+## Preprocessing
+```{r prepare_data}
+sce <- SingleCellExperiment(assays=list(counts=mat),
+                            colData=DataFrame(bx=colnames(mat), tissue="embryonic stem cell"),
+                            rowData=DataFrame(gene_name=rownames(mat)),
+                            metadata=list(gse="GSE134355", gsm="GSM4008674",
+                                          tissue="Embryonic Stem Cell"))
+```
+
+# Analysis
+
+## TPM
+
+```{r tpm}
+rowSums(mat) %>% 
+    { 1e6*./sum(.) } %>% 
+    `[`(GOIs)
+```
+
+## CPC
+
+```{r cpc}
+rowMeans(mat[GOIs,])
+```
+
+# Export
+```{r export_sce}
+saveRDS(sce, file="data/sce/hesc.raw.rds")
+```
+
+# Conclusion
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

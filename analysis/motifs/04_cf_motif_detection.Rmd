@@ -1,0 +1,350 @@
+---
+title: "Cleavage Factor Motif Densities"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Initialization
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(plyranges)
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+```
+
+## Parameters
+```{r params}
+WIN_SIZE = 200
+RADIUS = 100
+EPSILON = 30
+TPM = 5
+N_CTS_LOW = 10
+N_CTS_HIGH = 80
+
+COLOR_VALS_CPA=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D")
+COLOR_VALS_CPA_PA=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D", AAAAAA="#888888")
+COLOR_VALS_EXTRA=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D", CAATTA="orchid4")
+
+FILE_UTROME = sprintf("data/granges/utrome_gr_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds", EPSILON, TPM)
+FILE_BED = sprintf("data/bed/celltypes/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
+FILE_BED_UNLIKELY = sprintf("data/bed/cleavage-sites/utrome.unlikely.e%d.t%d.gc39.pas3.f0.9999.bed.gz",
+                            EPSILON, TPM)
+```
+
+## Functions
+```{r methods}
+get_centered_motif_sites <- function (motif, seqs) {
+  seqs %>% 
+    vmatchPattern(pattern=motif, fixed=FALSE) %>%
+    unlist %>% as.data.frame %>%
+    mutate(motif=motif,
+           start=start - WIN_SIZE/2,
+           end=end - WIN_SIZE/2,
+           center=(end + start)/2) %>%
+    select(motif, center, start, end)
+}
+
+vdetectPattern <- function (motif, seqs, ...) {
+    vcountPattern(motif, seqs, fixed=FALSE, ...) > 0 
+}
+
+has_motif <- function (gr, motif, win=NULL,
+                       bs=BSgenome.Hsapiens.UCSC.hg38, ...) {
+    gr_win <- if (is.null(win)) gr else {
+        stopifnot(length(win) == 2 & win[[1]] <= win[[2]])
+        win_shift <- sum(win)/2
+        gr %>%
+            anchor_center() %>%
+            mutate(width=win[[2]] - win[[1]]) %>% {
+                if (win_shift > 0) {
+                    shift_downstream(., win_shift)
+                } else {
+                    shift_upstream(., -win_shift)
+                }
+            }
+    }
+    vdetectPattern(motif, getSeq(bs, gr_win), ...)
+}
+
+has_pas <- . %>% has_motif("AWTAAA", c(-50,0))
+has_cf1 <- . %>% has_motif("TGTA", c(-100,0))
+has_cf2 <- . %>% has_motif("TGTST", c(0,50))
+has_urich <- . %>% has_motif("TTTTT", c(0,50), max.mismatch=1)
+has_ukuk <- . %>% has_motif("TKTKTK", c(0,50))
+
+get_motif_combinations1 <- function (gr) {
+    tibble(seqname=as.character(seqnames(gr)),
+           strand=as.character(strand(gr)),
+           pas=has_pas(gr),
+           cf1=has_cf1(gr),
+           cf2=has_cf2(gr)) %>%
+        mutate(label=case_when(
+            pas & cf1 & cf2 ~ 'all',
+            pas & cf1 ~ 'PAS + CFI',
+            pas & cf2 ~ 'PAS + CFII',
+            pas ~ 'PAS',
+            cf1 & cf2 ~ 'CFI + CFII',
+            cf1 ~ 'CFI',
+            cf2 ~ 'CFII',
+            TRUE ~ 'none'
+        ) %>% factor(levels=rev(c("all", 'PAS + CFI', 'PAS + CFII', 'PAS',
+                              'CFI + CFII', 'CFI', 'CFII', 'none'))))
+}
+
+get_motif_combinations2 <- function (gr) {
+    tibble(seqname=as.character(seqnames(gr)),
+           strand=as.character(strand(gr)),
+           pas=has_pas(gr),
+           cf1=has_cf1(gr),
+           cf2=has_urich(gr)) %>%
+        mutate(label=case_when(
+            pas & (cf1 | cf2) ~ 'PAS + CFI/II',
+            pas ~ 'PAS',
+            cf1 | cf2 ~ 'CFI/II',
+            TRUE ~ 'none'
+        ) %>% factor(levels=rev(c('PAS + CFI/II', 'PAS',
+                                  'CFI/II', 'none'))))
+}
+
+get_motif_combinations3 <- function (gr) {
+    tibble(seqname=as.character(seqnames(gr)),
+           strand=as.character(strand(gr)),
+           pas=has_pas(gr),
+           cf1=has_cf1(gr),
+           cf2=has_cf2(gr)) %>%
+        mutate(label=case_when(
+            pas & (cf1 | cf2) ~ 'PAS + CFI/II',
+            pas ~ 'PAS',
+            cf1 | cf2 ~ 'CFI/II',
+            TRUE ~ 'none'
+        ) %>% factor(levels=rev(c('PAS + CFI/II', 'PAS',
+                                  'CFI/II', 'none'))))
+}
+
+get_motif_combinations4 <- function (gr) {
+    tibble(seqname=as.character(seqnames(gr)),
+           strand=as.character(strand(gr)),
+           pas=has_pas(gr),
+           cf1=has_cf1(gr),
+           cf2=has_ukuk(gr)) %>%
+        mutate(label=case_when(
+            pas & (cf1 | cf2) ~ 'PAS + CFI/II',
+            pas ~ 'PAS',
+            cf1 | cf2 ~ 'CFI/II',
+            TRUE ~ 'none'
+        ) %>% factor(levels=rev(c('PAS + CFI/II', 'PAS',
+                                  'CFI/II', 'none'))))
+}
+```
+```
+
+# Load Data
+## Cleavage Sites by Cell Type
+```{r load_sites}
+gr_sites <- read_bed(FILE_BED) %>% 
+    `seqlevelsStyle<-`("UCSC") %>%
+    keepStandardChromosomes(pruning.mode="coarse") %>%
+    anchor_center() %>%
+    mutate(width=EPSILON)
+```
+
+## Human UTRome Transcripts
+```{r load_txs, message=FALSE, warning=FALSE}
+## Load all transcripts
+gr_txs <- readRDS(FILE_UTROME)
+
+## focus on cleavage sites
+gr_cleavage <- gr_txs %>%
+    anchor_3p %>%
+    mutate(n_celltypes=count_overlaps_directed(mutate(., width=0), gr_sites)) %>%
+    mutate(width=WIN_SIZE) %>%
+    shift_downstream(WIN_SIZE/2) %>%
+    mutate(origin=ifelse(is_novel, "UTRome", "GENCODE"),
+           origin_ud=case_when(
+               !is_novel ~ "GENCODE",
+               str_detect(transcript_id, "UTR-") ~ "upstream",
+               str_detect(transcript_id, "UTR+") ~ "downstream"
+           ))
+```
+
+## Cleavage Sites Marked as Internal Priming
+```{r ip_sites}
+gr_ip <- read_bed(FILE_BED_UNLIKELY) %>%
+  anchor_3p %>%
+  mutate(width=WIN_SIZE) %>%
+  shift_downstream(WIN_SIZE/2)
+```
+
+## Subgroups
+```{r create_subgroups}
+gr_single <- filter(gr_cleavage, utr_type == "single")
+gr_ipa <- filter(gr_cleavage, is_ipa)
+gr_multi_tandem <- filter(gr_cleavage, utr_type == 'multi', !is_ipa)
+
+gr_gencode <- filter(gr_cleavage, !is_novel)
+gr_novel <- filter(gr_cleavage, is_novel)
+
+gr_proximal_gc <- filter(gr_cleavage, utr_type == 'multi', is_proximal, !is_novel)
+gr_nondistal_gc <- filter(gr_cleavage, utr_type == 'multi', !is_distal, !is_novel)
+gr_distal_gc <- filter(gr_cleavage, utr_type == 'multi', is_distal, !is_novel)
+
+gr_proximal_novel <- filter(gr_cleavage, utr_type == 'multi', is_proximal, is_novel)
+gr_nondistal_novel <- filter(gr_cleavage, utr_type == 'multi', !is_distal, is_novel)
+gr_distal_novel <- filter(gr_cleavage, utr_type == 'multi', is_distal, is_novel)
+
+## only GENCODE
+gr_ctnone_gc <- filter(gr_cleavage, !is_novel, n_celltypes == 0)
+gr_common <- filter(gr_cleavage, !is_novel, n_celltypes > 0)
+
+gr_ctlow_gc <- filter(gr_cleavage, !is_novel, n_celltypes > 0, n_celltypes < N_CTS_LOW)
+gr_ctmid_gc <- filter(gr_cleavage, !is_novel, n_celltypes >= N_CTS_LOW, n_celltypes < N_CTS_HIGH)
+gr_cthigh_gc <- filter(gr_cleavage, !is_novel, n_celltypes >= N_CTS_HIGH)
+
+gr_ctlow_novel <- filter(gr_cleavage, is_novel, n_celltypes < N_CTS_LOW)
+gr_ctmid_novel <- filter(gr_cleavage, is_novel, n_celltypes >= N_CTS_LOW, n_celltypes < N_CTS_HIGH)
+gr_cthigh_novel <- filter(gr_cleavage, is_novel, n_celltypes >= N_CTS_HIGH)
+```
+
+
+# Plots
+## Main Split - Extended
+```{r detect_main1}
+df_main_split <- list("Common"=gr_common,
+                      "UTRome\nOnly"=gr_novel,
+                      "GENCODE\nOnly"=gr_ctnone_gc) %>%
+    lapply(get_motif_combinations1) %>%
+    bind_rows(.id="id") %>% 
+    mutate(id=factor(id, levels=c("Common", "UTRome\nOnly", "GENCODE\nOnly")))
+```
+
+```{r plot_main_count1, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+```{r plot_main_frac1, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(position="fill", color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+## Main Split - Coarse
+```{r detect_main2}
+df_main_split <- list("Common"=gr_common,
+                      "UTRome\nOnly"=gr_novel,
+                      "GENCODE\nOnly"=gr_ctnone_gc) %>%
+    lapply(get_motif_combinations2) %>%
+    bind_rows(.id="id") %>%
+    mutate(id=factor(id, levels=c("Common", "UTRome\nOnly", "GENCODE\nOnly")))
+```
+
+```{r plot_main_count2, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+```{r plot_main_frac2, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(position="fill", color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+
+## Main Split - Coarse v2
+```{r detect_main3}
+df_main_split <- list("Common"=gr_common,
+                      "UTRome\nOnly"=gr_novel,
+                      "GENCODE\nOnly"=gr_ctnone_gc) %>%
+    lapply(get_motif_combinations3) %>%
+    bind_rows(.id="id") %>%
+    mutate(id=factor(id, levels=c("Common", "UTRome\nOnly", "GENCODE\nOnly")))
+```
+
+```{r plot_main_count3, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+```{r plot_main_frac3, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(position="fill", color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+
+## Main Split - Coarse v3
+```{r detect_main4}
+df_main_split <- list("Common"=gr_common,
+                      "UTRome\nOnly"=gr_novel,
+                      "GENCODE\nOnly"=gr_ctnone_gc) %>%
+    lapply(get_motif_combinations4) %>%
+    bind_rows(.id="id") %>%
+    mutate(id=factor(id, levels=c("Common", "UTRome\nOnly", "GENCODE\nOnly")))
+```
+
+```{r plot_main_count4, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+```{r plot_main_frac4, fig.width=4, fig.height=4, warning=FALSE}
+df_main_split %>%
+    ggplot(aes(x=id, fill=label)) + 
+    geom_bar(position="fill", color='black', size=0.1, width=0.8) + 
+    scale_fill_grey(start=0.95, end=0.2) +
+    scale_y_continuous(expand=c(0,0,0.05,0)) +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Motifs\nDetected") +
+    theme_bw()
+```
+
+### Export
+```{r}
+ggsave("img/sq/fig1c-cf-motifs-hcl.pdf", 
+       width=4, height=4, dpi=300)
+```
+
+---
+
+# Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

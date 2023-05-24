@@ -1,0 +1,165 @@
+---
+title: "Cleavage Site Candidates per Cell Type"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+<!--
+Explain why this document exists. 
+What are you trying to figure out?
+What are your expectations prior to the analysis?
+-->
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(plyranges)
+library(tidyverse)
+library(cowplot)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+EPSILON = 30
+TPM = 5
+
+FILE_UTROME = sprintf("data/granges/utrome_gr_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds",
+                      EPSILON, TPM)
+FILE_BED = sprintf("data/bed/celltypes/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
+FILE_ALL = sprintf("qc/coverage/celltypes_all_sites.e%d.csv", EPSILON)
+FILE_PASSING = sprintf("qc/coverage/celltypes_passing_sites.e%d.t%d.csv", EPSILON, TPM)
+```
+
+## Functions
+
+```{r methods}
+
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_celltype_all <- read_csv(FILE_ALL, col_types="ccd")
+df_celltype_passing <- read_csv(FILE_PASSING, col_types="ccd") %>%
+    rename(cts_passing=cts_total)
+
+## Load utrs
+gr_txs <- readRDS(FILE_UTROME) %>% keepStandardChromosomes()
+
+gr_cleavage <- gr_txs %>% 
+  anchor_3p %>%
+  mutate(width=1)
+
+gr_sites <- read_bed(FILE_BED) %>% 
+    `seqlevelsStyle<-`("UCSC") %>%
+    keepStandardChromosomes(pruning.mode="coarse") %>%
+    anchor_center() %>%
+    mutate(width=20)
+```
+
+## Preprocessing
+```{r proc_data}
+df_sites <- left_join(df_celltype_all, df_celltype_passing, by=c("celltype_id", "strand")) %>%
+    pivot_longer(cols=c("cts_total", "cts_passing"), 
+                 names_to="status", names_prefix="cts_", values_to="sites") %>%
+    mutate(status=factor(status, levels=c("total", "passing")),
+           celltype_id=reorder(celltype_id, as.integer(str_extract(celltype_id, pattern="^[^-]+"))))
+
+cts_celltypes <- count_overlaps_directed(gr_cleavage, gr_sites)
+
+df_txs <- as_tibble(gr_txs) %>%
+    select(transcript_id, transcript_name, gene_name, 
+           utr_name, utr_rank, utr_type, utr_count,
+           strand, width, is_novel, is_ipa, is_proximal, is_distal) %>%
+    mutate(n_celltypes=cts_celltypes)
+```
+
+# Analysis
+
+## Passing sites per cell type
+### Single plot
+```{r plot_passing_all, fig.width=8, fig.height=12}
+df_sites %>%
+    ggplot(aes(x=celltype_id, y=sites, fill=status, group=strand)) +
+    geom_bar(stat='identity', position='dodge', color='black', size=0.2) +
+    coord_flip() +
+    scale_fill_manual(values=c("grey", "lightblue")) +
+    labs(x=NULL, y="Number of Sites", fill="Site Type") +
+    theme_bw()
+```
+
+### Split plots
+```{r plot_passing_halves, fig.width=8, fig.height=6}
+df_sites %>%
+    filter(as.integer(celltype_id) < 52) %>%
+    ggplot(aes(x=celltype_id, y=sites, fill=status, group=strand)) +
+    geom_bar(stat='identity', position='dodge', color='black', size=0.2) +
+    scale_y_continuous(expand=c(0,0), limits=c(0,3.2e5)) +
+    coord_flip() +
+    scale_fill_manual(values=c("grey", "lightblue")) +
+    labs(x=NULL, y="Number of Sites", fill="Site Type") +
+    theme_bw()
+
+df_sites %>%
+    filter(as.integer(celltype_id) > 51) %>%
+    ggplot(aes(x=celltype_id, y=sites, fill=status, group=strand)) +
+    geom_bar(stat='identity', position='dodge', color='black', size=0.2) +
+    scale_y_continuous(expand=c(0,0), limits=c(0,3.2e5)) +
+    coord_flip() +
+    scale_fill_manual(values=c("grey", "lightblue")) +
+    labs(x=NULL, y="Number of Sites", fill="Site Type") +
+    theme_bw()
+```
+
+## Cell types per cleavage site
+```{r plot_all, fig.width=5, fig.height=4}
+df_txs %>%
+    ggplot(aes(x=n_celltypes)) +
+    stat_count(fill='lightgrey', color='black') +
+    scale_x_continuous(expand=c(0,0.5,0,0.5)) +
+    scale_y_continuous(expand=c(0,0,0.03,0)) +
+    labs(x="Supporting cell types", "UTRome cleavage sites") +
+    theme_bw()
+```
+
+# Conclusion
+
+<!--
+What was found?
+Clearly state conclusions.
+Was there anything unexpected?
+Are there unanswered questions?
+What should be worked on next?
+-->
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

@@ -1,0 +1,185 @@
+---
+title: "Cell-Type-Specific Cleavage Sites"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Initialization
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(plyranges)
+library(tidyverse)
+library(magrittr)
+```
+
+## Parameters
+```{r params}
+EPSILON = 30
+TPM = 5
+N_CTS_LOW = 10
+N_CTS_HIGH = 80
+
+FILE_UTROME = sprintf("data/granges/utrome_gr_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds", EPSILON, TPM)
+FILE_BED = sprintf("data/bed/celltypes/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
+```
+
+## Functions
+```{r methods}
+
+```
+
+# Load Data
+
+## Cleavage Sites by Cell Type
+```{r load_sites}
+gr_sites <- read_bed(FILE_BED) %>% 
+    `seqlevelsStyle<-`("UCSC") %>%
+    keepStandardChromosomes(pruning.mode="coarse") %>%
+    anchor_center() %>%
+    mutate(width=EPSILON)
+```
+
+## Human UTRome Transcripts
+```{r load_txs, message=FALSE, warning=FALSE}
+## Load all transcripts
+gr_txs <- readRDS(FILE_UTROME)
+
+## focus on cleavage sites
+gr_cleavage <- gr_txs %>%
+    anchor_3p %>%
+    mutate(width=0)
+
+df_cs_celltypes <- gr_sites %>%
+    mutate(cs_gencode=count_overlaps_directed(., filter(gr_cleavage, !is_novel)),
+           cs_novel=count_overlaps_directed(., filter(gr_cleavage, is_novel)),
+           ) %>%
+    filter(cs_gencode + cs_novel > 0) %>%
+    group_by(name) %>%
+    summarize(n_cs_gencode=sum(cs_gencode > 0),
+              n_cs_novel=sum(cs_novel > 0)) %>%
+    as.tibble() %>%
+    mutate(celltype_rank=as.numeric(str_extract(name, "^[0-9]+")),
+           lbl_celltype=factor(name) %>% fct_reorder(celltype_rank))
+```
+
+
+# Plots
+## Cell Count Order
+```{r plt_n_cs_cts, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='stack', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+```{r plt_n_cs_fill, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='fill', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+
+## Total Sites Order
+```{r plt_n_cs_cts_total, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    mutate(lbl_celltype=fct_reorder(lbl_celltype, n_cs_gencode+n_cs_novel)) %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='stack', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+```{r plt_n_cs_fill_total, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    mutate(lbl_celltype=fct_reorder(lbl_celltype, n_cs_gencode+n_cs_novel)) %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='fill', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+
+## Novel Sites Order
+```{r plt_n_cs_cts_novel, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    mutate(lbl_celltype=fct_reorder(lbl_celltype, n_cs_novel)) %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='stack', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+```{r plt_n_cs_fill_total_novel, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    mutate(lbl_celltype=fct_reorder(lbl_celltype, n_cs_novel)) %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='fill', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+## Fraction of Novel Sites Order
+```{r plt_n_cs_cts_total_novel_frac, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    mutate(lbl_celltype=fct_reorder(lbl_celltype, n_cs_novel/(n_cs_gencode+n_cs_novel))) %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='stack', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+```{r plt_n_cs_fill_novel_frac, fig.height=8, fig.width=8}
+df_cs_celltypes %>%
+    mutate(lbl_celltype=fct_reorder(lbl_celltype, n_cs_novel/(n_cs_gencode+n_cs_novel))) %>%
+    pivot_longer(cols=2:3, names_to='atlas', names_prefix='n_cs_', values_to='n_cs') %>%
+    ggplot(aes(x=lbl_celltype, y=n_cs, fill=atlas)) +
+    geom_bar(stat='identity', position='fill', linewidth=0.1, color='black') +
+    scale_fill_manual(values=c(gencode='#cccccc', novel='#77aaee' )) +
+    coord_flip() +
+    labs(x=NULL, y="Fraction of Cleavage Sites", fill="Source") +
+    theme_bw() +
+    theme(axis.text.y=element_text(size=rel(0.5)))
+```
+
+---
+
+# Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```

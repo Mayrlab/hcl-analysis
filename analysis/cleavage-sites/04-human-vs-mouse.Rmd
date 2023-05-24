@@ -1,0 +1,190 @@
+---
+title: "Human vs Mouse - Cleavage Sites"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Purpose
+
+<!--
+Explain why this document exists. 
+What are you trying to figure out?
+What are your expectations prior to the analysis?
+-->
+
+# Initialization
+
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(magrittr)
+library(tidyverse)
+library(cowplot)
+library(GenomicFeatures)
+library(GenomicRanges)
+library(plyranges)
+library(rtracklayer)
+library(pheatmap)
+```
+
+## Parameters
+```{r set_params}
+set.seed(20210818)
+CSV_ORTHOLOGUES="../../db/hg38/ensembl_human_mouse_orthologues.csv.gz"
+DF_HUMAN="../hcl/data/gff/df_utrome_genes.e30.t5.gc39.pas3.f0.9999.w500.Rds"
+DF_MOUSE="../mca2/data/gff/df_utrome_genes.e30.t5.gc25.pas3.f0.9999.w500.Rds"
+```
+
+## Functions
+
+```{r methods}
+maybe_kable <- function (df) { if (nrow(df) > 0) { knitr::kable(df) } }
+scale_mat_cols <- function (mat, column_total=1) {
+    m <- mat %*% diag(column_total/colSums(mat, na.rm=TRUE))
+    dimnames(m) <- dimnames(mat)
+    m
+}
+
+scale_mat_rows <- function (mat, column_total=1) { mat %>% t %>% scale_mat_cols(column_total) %>% t }
+```
+
+# Data
+## Loading
+```{r load_data, message=FALSE}
+df_orthos <- read_csv(CSV_ORTHOLOGUES, skip=1, col_types='cccccid',
+                      col_names=c("ensembl_id_hs", "gene_id_hs", "ensembl_id_mm", 
+                                  "gene_name_mm", "gene_name_hs", "tx_count_hs", "cons_mm")) %>%
+    dplyr::select(ensembl_id_hs, gene_name_hs, ensembl_id_mm, gene_name_mm, tx_count_hs, cons_mm) %>%
+    filter(!is.na(ensembl_id_mm))
+
+df_hs <- readRDS(DF_HUMAN) %>% as_tibble %>% mutate(ensembl_id=str_remove(gene_id, "\\.[0-9]+$"))
+df_mm <- readRDS(DF_MOUSE) %>% as_tibble %>% mutate(ensembl_id=str_remove(gene_id, "\\.[0-9]+$"))
+```
+
+## Preprocessing
+```{r prepare_data}
+df_combined <- left_join(df_hs, df_orthos, by=c("ensembl_id"="ensembl_id_hs", "gene_name"="gene_name_hs")) %>%
+    dplyr::rename("ensembl_id_hs"="ensembl_id", "gene_name_hs"="gene_name") %>%
+    left_join(df_mm, by=c("ensembl_id_mm"="ensembl_id"), suffix=c("_hs", "_mm"))
+```
+
+# Analysis
+
+## Annotated UTR Counts
+### Raw
+#### Distribution of Human into Mouse
+```{r heatmap_raw_utr_count_hs_mm, fig.width=5, fig.height=4}
+MAX_UTRS=10
+df_combined %>%
+    filter(!is.na(utr_count_raw_mm)) %>%
+    mutate(hs=cut(utr_count_raw_hs, 
+                  breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                  labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           mm=cut(utr_count_raw_mm, 
+                   breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                   labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           ) %>%
+    xtabs(formula=~ mm + hs) %>%
+    scale_mat_cols %>%
+    `[<-`(. == 0, NA) %>%
+    pheatmap(cluster_rows=FALSE, cluster_cols=FALSE, 
+             angle_col=0, scale='none',
+             color=viridis::mako(100))
+```
+
+#### Distribution of Mouse into Human
+```{r heatmap_raw_utr_count_mm_hs, fig.width=5, fig.height=4}
+MAX_UTRS=10
+df_combined %>%
+    filter(!is.na(utr_count_raw_mm)) %>%
+    mutate(hs=cut(utr_count_raw_hs, 
+                  breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                  labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           mm=cut(utr_count_raw_mm, 
+                   breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                   labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           ) %>%
+    xtabs(formula=~ mm + hs) %>%
+    scale_mat_rows %>%
+    `[<-`(. == 0, NA) %>%
+    pheatmap(cluster_rows=FALSE, cluster_cols=FALSE, 
+             angle_col=0, scale='none',
+             color=viridis::mako(100))
+```
+
+### Tandem UTR Count
+#### Distribution Human into Mouse
+```{r heatmap_tandem_utr_count, fig.width=5, fig.height=4}
+MAX_UTRS=8
+df_combined %>%
+    filter(!is.na(utr_count_no_ipa_mm)) %>%
+    mutate(hs=cut(utr_count_no_ipa_hs, 
+                  breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                  labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           mm=cut(utr_count_no_ipa_mm, 
+                   breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                   labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           ) %>%
+    xtabs(formula=~ mm + hs) %>%
+    scale_mat_cols %>%
+    `[<-`(. == 0, NA) %>%
+    pheatmap(cluster_rows=FALSE, cluster_cols=FALSE, 
+             angle_col=0, scale='none', color=viridis::mako(100), 
+             display_numbers=TRUE, number_color="orange", fontsize_number=12)
+```
+
+#### Distribution Mouse into Human
+```{r heatmap_tandem_utr_count_mm_hs, fig.width=5, fig.height=4}
+MAX_UTRS=8
+df_combined %>%
+    filter(!is.na(utr_count_no_ipa_mm)) %>%
+    mutate(hs=cut(utr_count_no_ipa_hs, 
+                  breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                  labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           mm=cut(utr_count_no_ipa_mm, 
+                   breaks=c(seq(0.5, MAX_UTRS-0.5, by=1), 1000),
+                   labels=c(seq(MAX_UTRS-1), str_c(MAX_UTRS, "+"))),
+           ) %>%
+    xtabs(formula=~ mm + hs) %>%
+    scale_mat_rows %>%
+    `[<-`(. == 0, NA) %>%
+    pheatmap(cluster_rows=FALSE, cluster_cols=FALSE, 
+             angle_col=0, scale='none', color=viridis::mako(100), 
+             display_numbers=TRUE, number_color="orange", fontsize_number=12)
+```
+
+```{r}
+df_combined %>%
+    filter(!is.na(utr_type_no_ipa_mm)) %>%
+    xtabs(formula=~utr_type_no_ipa_hs+ utr_type_no_ipa_mm) %>%
+    `dimnames<-`(list("Human"=c("multi", "single"), "Mouse"=c("multi", "single")))
+```
+
+# Conclusion
+
+
+---
+
+# Runtime Details
+## Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
+
+## Conda Environment
+```{bash comment="", echo=FALSE}
+if ! command -v conda &> /dev/null
+then
+  echo "Conda not detected."
+elif [ -z "${CONDA_PREFIX}" ]
+then
+  echo "No active Conda environment."
+else
+  echo "## Conda Environment YAML"
+  conda env export
+fi
+```

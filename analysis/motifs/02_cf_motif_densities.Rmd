@@ -1,0 +1,805 @@
+---
+title: "Cleavage Factor Motif Densities"
+author: "Mervin M Fansler"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+# Initialization
+## Libraries
+```{r libs, message=FALSE, warning=FALSE}
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(plyranges)
+library(tidyverse)
+library(magrittr)
+library(cowplot)
+```
+
+## Parameters
+```{r params}
+WIN_SIZE = 1000
+RADIUS = 300
+EPSILON = 30
+TPM = 5
+N_CTS_LOW = 10
+N_CTS_HIGH = 80
+
+COLOR_VALS_CPA=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D")
+COLOR_VALS_CPA_PA=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D", AAAAAA="#888888")
+COLOR_VALS_EXTRA=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D", CAATTA="orchid4")
+
+FILE_UTROME = sprintf("data/granges/utrome_gr_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds", EPSILON, TPM)
+FILE_BED = sprintf("data/bed/celltypes/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
+FILE_BED_UNLIKELY = sprintf("data/bed/cleavage-sites/utrome.unlikely.e%d.t%d.gc39.pas3.f0.9999.bed.gz",
+                            EPSILON, TPM)
+```
+
+## Functions
+```{r methods}
+get_centered_motif_sites <- function (motif, seqs) {
+  seqs %>% 
+    vmatchPattern(pattern=motif, fixed=FALSE) %>%
+    unlist %>% as.data.frame %>%
+    mutate(motif=motif,
+           start=start - WIN_SIZE/2,
+           end=end - WIN_SIZE/2,
+           center=(end + start)/2) %>%
+    select(motif, center, start, end)
+}
+
+## plot density from motif positions data.frame
+plot_motif_density <- function (df_motifs, RADIUS=300, title="UTRome",
+                                col_values=COLOR_VALS_CPA) {
+  df_motifs %>%
+    ggplot(aes(x=center, color=motif)) +
+    stat_density(aes(y=..scaled..), geom='line', position='identity', 
+                 size=1.5, alpha=0.9) +
+    geom_hline(yintercept=0) +
+    geom_vline(xintercept=0, linetype='dashed', color='black') +
+    coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+    scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                       limits=c(-RADIUS - 100, RADIUS+100)) +
+    scale_color_manual(values=col_values) +
+    labs(x=sprintf("Distance from Cleavage Site (%s)", title),
+         y="Relative Density", color="Motif") +
+    guides(color=guide_legend(override.aes=list(alpha=1, size=3))) +
+    theme_minimal_vgrid()
+}
+
+## plot count from motif positions data.frame
+plot_motif_count <- function (df_motifs, RADIUS=300, title="UTRome",
+                                col_values=COLOR_VALS_CPA) {
+  df_motifs %>%
+    ggplot(aes(x=center, color=motif)) +
+    stat_density(aes(y=..count..), geom='line', position='identity', 
+                 size=1.5, alpha=0.9) +
+    geom_hline(yintercept=0) +
+    geom_vline(xintercept=0, linetype='dashed', color='black') +
+    coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+    scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                       limits=c(-RADIUS - 100, RADIUS+100)) +
+    scale_color_manual(values=col_values) +
+    labs(x=sprintf("Distance from Cleavage Site (%s)", title),
+         y="Count", color="Motif") +
+    guides(color=guide_legend(override.aes=list(alpha=1, size=3))) +
+    theme_minimal_vgrid()
+}
+
+## plot unscaled density from motif positions data.frame
+plot_motif_density_ns <- function (df_motifs, RADIUS=300, title="UTRome",
+                                col_values=COLOR_VALS_CPA) {
+  df_motifs %>%
+    ggplot(aes(x=center, color=motif)) +
+    stat_density(geom='line', size=1.5, alpha=0.9, position="identity") +
+    geom_hline(yintercept=0) +
+    geom_vline(xintercept=0, linetype='dashed', color='black') +
+    coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+    scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                       limits=c(-RADIUS - 100, RADIUS+100)) +
+    scale_color_manual(values=col_values) +
+    labs(x=sprintf("Distance from Cleavage Site (%s)", title),
+         y="Density", color="Motif") +
+    guides(color=guide_legend(override.aes=list(alpha=1, size=3))) +
+    theme_minimal_vgrid()
+}
+```
+
+# Load Data
+## Cleavage Sites by Cell Type
+```{r load_sites}
+gr_sites <- read_bed(FILE_BED) %>% 
+    `seqlevelsStyle<-`("UCSC") %>%
+    keepStandardChromosomes(pruning.mode="coarse") %>%
+    anchor_center() %>%
+    mutate(width=EPSILON)
+```
+
+## Human UTRome Transcripts
+```{r load_txs, message=FALSE, warning=FALSE}
+## Load all transcripts
+gr_txs <- readRDS(FILE_UTROME)
+
+## focus on cleavage sites
+gr_cleavage <- gr_txs %>%
+    anchor_3p %>%
+    mutate(n_celltypes=count_overlaps_directed(mutate(., width=0), gr_sites)) %>%
+    mutate(width=WIN_SIZE) %>%
+    shift_downstream(WIN_SIZE/2) %>%
+    mutate(origin=ifelse(is_novel, "UTRome", "GENCODE"),
+           origin_ud=case_when(
+               !is_novel ~ "GENCODE",
+               str_detect(transcript_id, "UTR-") ~ "upstream",
+               str_detect(transcript_id, "UTR+") ~ "downstream"
+           ))
+```
+
+## Cleavage Sites Marked as Internal Priming
+```{r ip_sites}
+gr_ip <- read_bed(FILE_BED_UNLIKELY) %>%
+  anchor_3p %>%
+  mutate(width=WIN_SIZE) %>%
+  shift_downstream(WIN_SIZE/2)
+```
+
+## Subgroups
+```{r create_subgroups}
+gr_single <- filter(gr_cleavage, utr_type == "single")
+gr_ipa <- filter(gr_cleavage, is_ipa)
+gr_multi_tandem <- filter(gr_cleavage, utr_type == 'multi', !is_ipa)
+
+gr_gencode <- filter(gr_cleavage, !is_novel)
+gr_novel <- filter(gr_cleavage, is_novel)
+
+gr_proximal_gc <- filter(gr_cleavage, utr_type == 'multi', is_proximal, !is_novel)
+gr_nondistal_gc <- filter(gr_cleavage, utr_type == 'multi', !is_distal, !is_novel)
+gr_distal_gc <- filter(gr_cleavage, utr_type == 'multi', is_distal, !is_novel)
+
+gr_proximal_novel <- filter(gr_cleavage, utr_type == 'multi', is_proximal, is_novel)
+gr_nondistal_novel <- filter(gr_cleavage, utr_type == 'multi', !is_distal, is_novel)
+gr_distal_novel <- filter(gr_cleavage, utr_type == 'multi', is_distal, is_novel)
+
+## only GENCODE
+gr_ctnone_gc <- filter(gr_cleavage, !is_novel, n_celltypes == 0)
+gr_common <- filter(gr_cleavage, !is_novel, n_celltypes > 0)
+
+gr_ctlow_gc <- filter(gr_cleavage, !is_novel, n_celltypes > 0, n_celltypes < N_CTS_LOW)
+gr_ctmid_gc <- filter(gr_cleavage, !is_novel, n_celltypes >= N_CTS_LOW, n_celltypes < N_CTS_HIGH)
+gr_cthigh_gc <- filter(gr_cleavage, !is_novel, n_celltypes >= N_CTS_HIGH)
+
+gr_ctlow_novel <- filter(gr_cleavage, is_novel, n_celltypes < N_CTS_LOW)
+gr_ctmid_novel <- filter(gr_cleavage, is_novel, n_celltypes >= N_CTS_LOW, n_celltypes < N_CTS_HIGH)
+gr_cthigh_novel <- filter(gr_cleavage, is_novel, n_celltypes >= N_CTS_HIGH)
+```
+
+
+# Plots
+## All Sites (`r length(gr_cleavage)` sites)
+```{r plot_all, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_cleavage)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="All")
+```
+
+## Single-UTR Genes (`r length(gr_single)` sites)
+```{r plot_single, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_single)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Single UTR Genes")
+```
+
+## Intronic Cleavage Sites (`r length(gr_ipa)` sites)
+```{r plot_ipa, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ipa)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Intronic Sites")
+```
+
+## Tandem Cleavage Sites (`r length(gr_multi_tandem)` sites)
+```{r plot_tandem, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_multi_tandem)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Tandem Sites")
+```
+
+## GENCODE
+### All Cleavage Sites (`r length(gr_gencode)` sites)
+```{r plot_gencode, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_gencode)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE Sites")
+```
+
+### Proximal Cleavage Sites (`r length(gr_proximal_gc)` sites)
+```{r plot_proximal_gc, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_proximal_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE Proximal Sites")
+```
+
+### Non-Distal Cleavage Sites (`r length(gr_nondistal_gc)` sites)
+```{r plot_nondistal_gc, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_nondistal_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE Non-Distal Sites")
+```
+
+### Distal Cleavage Sites (`r length(gr_distal_gc)` sites)
+```{r plot_distal_gc, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_distal_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE Distal Sites")
+```
+
+
+### Cell Types High (`r length(gr_cthigh_gc)` sites)
+```{r plot_cthigh_gc, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_cthigh_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE - Cell Types High")
+```
+
+### Cell Types Midrange  (`r length(gr_ctmid_gc)` sites)
+```{r plot_ctmid_gc, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ctmid_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE - Cell Types Midrange")
+```
+
+### Cell Types Low  (`r length(gr_ctlow_gc)` sites)
+```{r plot_ctlow_gc, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ctlow_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE - Cell Types Low")
+```
+
+### No Cell Types Supporting  (`r length(gr_ctnone_gc)` sites)
+```{r plot_ctnone_gc, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ctnone_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE - No Supporting Cell Types")
+```
+
+#### Export
+```{r export_gencode_only_rd}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.gencode-only.rel-density.pdf", width=8, height=6, dpi=300)
+```
+
+```{r plot_ctnone_gc_ns, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ctnone_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density_ns(title="GENCODE - No Supporting Cell Types")
+```
+
+#### Export
+```{r export_gencode_only_d}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.gencode-only.density.pdf", width=8, height=6, dpi=300)
+```
+
+
+```{r plot_ctnone_gc_count, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ctnone_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_count(title="GENCODE - No Supporting Cell Types")
+```
+
+#### Export
+```{r export_gencode_only_count}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.gencode-only.count.pdf", width=8, height=6, dpi=300)
+```
+
+### Common Cleavage Sites  (`r length(gr_common)` sites)
+```{r plot_common, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_common)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="GENCODE + HCL")
+```
+
+#### Export
+```{r export_common_rd}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.gencode-hcl-common.rel-density.pdf", 
+       width=8, height=6, dpi=300)
+```
+
+```{r plot_common_density, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_common)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density_ns(title="GENCODE + HCL")
+```
+
+#### Export
+```{r export_common_d}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.gencode-hcl-common.density.pdf", 
+       width=8, height=6, dpi=300)
+```
+
+```{r plot_common_count, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_common)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_count(title="GENCODE + HCL")
+```
+
+#### Export
+```{r export_common_count}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.gencode-hcl-common.count.pdf", 
+       width=8, height=6, dpi=300)
+```
+
+
+## Novel Cleavage Sites
+### All Cleavage Sites (`r length(gr_novel)` sites)
+```{r plot_novel_rd, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Novel Sites")
+```
+
+#### Export
+```{r export_novel_only_rd}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.hcl-only.rel-density.pdf", 
+       width=8, height=6, dpi=300)
+```
+
+```{r plot_novel_d, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density_ns(title="Novel Sites")
+```
+
+#### Export
+```{r export_novel_only_d}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.hcl-only.density.pdf", 
+       width=8, height=6, dpi=300)
+```
+
+```{r plot_novel_count, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_count(title="Novel Sites")
+```
+
+#### Export
+```{r export_novel_only_count}
+ggsave("img/sq/fig1c-cleavage-factor-motifs.hcl-only.count.pdf", 
+       width=8, height=6, dpi=300)
+```
+
+### Proximal Cleavage Sites (`r length(gr_proximal_novel)` sites)
+```{r plot_proximal_novel, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_proximal_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Novel Proximal Sites")
+```
+
+### Non-Distal Cleavage Sites (`r length(gr_nondistal_novel)` sites)
+```{r plot_nondistal_novel, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_nondistal_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Novel Non-Distal Sites")
+```
+
+### Distal Cleavage Sites (`r length(gr_distal_novel)` sites)
+```{r plot_distal_novel, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_distal_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Novel Distal Sites")
+```
+
+### Cell Types High (`r length(gr_cthigh_novel)` sites)
+```{r plot_cthigh_novel, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_cthigh_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Novel - Cell Types High")
+```
+
+### Cell Types Midrange  (`r length(gr_ctmid_novel)` sites)
+```{r plot_ctmid_novel, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ctmid_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Novel - Cell Types Midrange")
+```
+
+### Cell Types Low  (`r length(gr_ctlow_novel)` sites)
+```{r plot_ctlow_novel, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ctlow_novel)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Novel - Cell Types Low")
+```
+
+### Internal Priming Sites (`r length(gr_ip)` sites)
+```{r plot_ip, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ip)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt) %>%
+  plot_motif_density(title="Internal Priming Sites")
+```
+
+#### Export
+```{r export_ip}
+ggsave("img/cleavage_factor_motifs.ip_likely.pdf", width=8, height=6, dpi=300)
+```
+
+```{r plot_ip_pa, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_ip)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+df_aaaaaa <- get_centered_motif_sites(motif="AAAAAA", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt, df_aaaaaa) %>%
+  plot_motif_density(title="Internal Priming Sites", col_values=COLOR_VALS_CPA_PA)
+```
+
+#### Export
+```{r export_ip_pa}
+ggsave("img/cleavage_factor_motifs.ip_likely_pa.pdf", width=8, height=6, dpi=300)
+```
+
+# Combined Motif Analysis
+## UTRome vs GENCODE
+```{r combined}
+grs_cleavage <- gr_cleavage %>% split(.$origin)
+
+seqs_cleavage <- lapply(grs_cleavage, . %>% getSeq(x=BSgenome.Hsapiens.UCSC.hg38))
+
+lapply_get_centered_motif_sites <- function(motif, seqs=seqs_cleavage) {
+  lapply(seqs, . %>% get_centered_motif_sites(motif=motif)) %>% 
+    do.call(what=rbind) %>%
+    mutate(origin=str_extract(rownames(.), "^[^.]+")) %>%
+    `rownames<-`(NULL)
+}
+
+df_tgta <- lapply_get_centered_motif_sites(motif="TGTA") %>%
+  mutate(origin=factor(origin, levels=c("GENCODE", "UTRome")))
+df_pas <- lapply_get_centered_motif_sites(motif="AWTAAA") %>%
+  mutate(origin=factor(origin, levels=c("GENCODE", "UTRome")))
+df_tgtgt <- lapply_get_centered_motif_sites(motif="TGTST") %>%
+  mutate(origin=factor(origin, levels=c("GENCODE", "UTRome")))
+
+df_combined <- rbind(df_tgta, df_pas, df_tgtgt)
+```
+
+## Plot
+```{r plot_split, fig.width=8, fig.height=6, warning=FALSE}
+df_combined %>%
+  ggplot(aes(x=center, color=motif, linetype=origin)) +
+  stat_density(aes(y=..scaled..), geom='line', position='identity', 
+               size=1.0, alpha=0.9) +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0, linetype='dashed', color='black') +
+  coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+  scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                     limits=c(-RADIUS - 100, RADIUS+100)) +
+  scale_color_manual(values=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D")) +
+  scale_linetype_manual(values=c("GENCODE"="solid", "UTRome"="dashed")) +
+  labs(x="Distance from RefSeq Cleavage Site",
+       y="Relative Density", color="Motif", linetype="Annotation") +
+  guides(color=guide_legend(override.aes=list(alpha=1, size=3))) +
+  theme_minimal_vgrid()
+
+ggsave("img/cleavage_factor_motifs.gencode_vs_utrome.positions.pdf", width=8, height=6, dpi=300)
+```
+
+## GENCODE vs Upstream vs Downstream
+```{r combined_ud}
+grs_cleavage_ud <- gr_cleavage %>% split(.$origin_ud)
+
+seqs_cleavage_ud <- lapply(grs_cleavage_ud, . %>% getSeq(x=BSgenome.Hsapiens.UCSC.hg38))
+
+lapply_get_centered_motif_sites <- function(motif, seqs=seqs_cleavage_ud) {
+  lapply(seqs, . %>% get_centered_motif_sites(motif=motif)) %>% 
+    do.call(what=rbind) %>%
+    mutate(origin=str_extract(rownames(.), "^[^.]+")) %>%
+    `rownames<-`(NULL)
+}
+
+df_tgta_ud <- lapply_get_centered_motif_sites(motif="TGTA") %>%
+  mutate(origin=factor(origin, levels=c("GENCODE", "upstream", "downstream")))
+df_pas_ud <- lapply_get_centered_motif_sites(motif="AWTAAA") %>%
+  mutate(origin=factor(origin, levels=c("GENCODE", "upstream", "downstream")))
+df_tgtgt_ud <- lapply_get_centered_motif_sites(motif="TGTST") %>%
+  mutate(origin=factor(origin, levels=c("GENCODE", "upstream", "downstream")))
+
+df_combined_ud <- rbind(df_tgta_ud, df_pas_ud, df_tgtgt_ud)
+```
+
+### Plot All
+```{r plot_split_ud, fig.width=8, fig.height=6, warning=FALSE}
+df_combined_ud %>%
+  ggplot(aes(x=center, color=motif, linetype=origin)) +
+  stat_density(aes(y=..scaled..), geom='line', position='identity', 
+               size=1.0, alpha=0.9) +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0, linetype='dashed', color='black') +
+  coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+  scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                     limits=c(-RADIUS - 100, RADIUS+100)) +
+  scale_color_manual(values=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D")) +
+  scale_linetype_manual(values=c("GENCODE"="solid", "upstream"="dotted", "downstream"="dashed")) +
+  labs(x="Distance from RefSeq Cleavage Site",
+       y="Relative Density", color="Motif", linetype="Annotation") +
+  guides(color=guide_legend(override.aes=list(alpha=1, size=3))) +
+  theme_minimal_vgrid()
+
+ggsave("img/cleavage_factor_motifs.gencode_vs_utrome_ud.positions.pdf", width=8, height=6, dpi=300)
+```
+
+### Plot Individual
+#### TGTA
+```{r plot_tgta_ud, fig.width=8, fig.height=6, warning=FALSE}
+df_tgta_ud %>%
+  ggplot(aes(x=center, color=motif, linetype=origin)) +
+  stat_density(aes(y=..scaled..), geom='line', position='identity', 
+               size=1.0, alpha=0.9) +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0, linetype='dashed', color='black') +
+  coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+  scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                     limits=c(-RADIUS - 100, RADIUS+100)) +
+  scale_color_manual(values=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D")) +
+  scale_linetype_manual(values=c("GENCODE"="solid", "upstream"="dotted", "downstream"="dashed")) +
+  labs(x="Distance from RefSeq Cleavage Site",
+       y="Relative Density", color="Motif", linetype="Annotation") +
+  guides(color=FALSE) +
+  theme_minimal_vgrid()
+
+ggsave("img/cleavage_factor_motifs.gencode_vs_utrome_ud.positions.TGTA.pdf", width=8, height=6, dpi=300)
+```
+
+#### AWTAAA
+```{r plot_awtaaa_ud, fig.width=8, fig.height=6, warning=FALSE}
+df_pas_ud %>%
+  ggplot(aes(x=center, color=motif, linetype=origin)) +
+  stat_density(aes(y=..scaled..), geom='line', position='identity', 
+               size=1.0, alpha=0.9) +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0, linetype='dashed', color='black') +
+  coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+  scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                     limits=c(-RADIUS - 100, RADIUS+100)) +
+  scale_color_manual(values=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D")) +
+  scale_linetype_manual(values=c("GENCODE"="solid", "upstream"="dotted", "downstream"="dashed")) +
+  labs(x="Distance from RefSeq Cleavage Site",
+       y="Relative Density", color="Motif", linetype="Annotation") +
+  guides(color=FALSE) +
+  theme_minimal_vgrid()
+
+ggsave("img/cleavage_factor_motifs.gencode_vs_utrome_ud.positions.AWTAAA.pdf", width=8, height=6, dpi=300)
+```
+
+#### TGTST
+```{r plot_tgtgt_ud, fig.width=8, fig.height=6, warning=FALSE}
+df_tgtgt_ud %>%
+  ggplot(aes(x=center, color=motif, linetype=origin)) +
+  stat_density(aes(y=..scaled..), geom='line', position='identity', 
+               size=1.0, alpha=0.9) +
+  geom_hline(yintercept=0) +
+  geom_vline(xintercept=0, linetype='dashed', color='black') +
+  coord_cartesian(xlim=c(-RADIUS, RADIUS)) +
+  scale_x_continuous(breaks=seq(-RADIUS, RADIUS, 100), 
+                     limits=c(-RADIUS - 100, RADIUS+100)) +
+  scale_color_manual(values=c(TGTA="#73ADD6", AWTAAA="#358C44", TGTST="#F36B4D")) +
+  scale_linetype_manual(values=c("GENCODE"="solid", "upstream"="dotted", "downstream"="dashed")) +
+  labs(x="Distance from RefSeq Cleavage Site",
+       y="Relative Density", color="Motif", linetype="Annotation") +
+  guides(color=FALSE) +
+  theme_minimal_vgrid()
+
+ggsave("img/cleavage_factor_motifs.gencode_vs_utrome_ud.positions.TGTST.pdf", width=8, height=6, dpi=300)
+```
+
+
+# STOP-Codon Readthrough-Prevention Motif
+## All Sites (`r length(gr_cleavage)` sites)
+```{r plot_all_extra, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_cleavage)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+df_caatta <- get_centered_motif_sites(motif="CAATTA", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt, df_caatta) %>%
+  plot_motif_density(title="All", col_values=COLOR_VALS_EXTRA)
+```
+
+
+## Single-UTR Genes (`r length(gr_single)` sites)
+```{r plot_single_extra, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_single)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+df_caatta <- get_centered_motif_sites(motif="CAATTA", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt, df_caatta) %>%
+  plot_motif_density(title="Single-UTR Genes", col_values=COLOR_VALS_EXTRA)
+```
+
+## GENCODE Only
+### Proximal Cleavage Sites (`r length(gr_proximal_gc)` sites)
+```{r plot_proximal_gc_extra, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_proximal_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+df_caatta <- get_centered_motif_sites(motif="CAATTA", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt, df_caatta) %>%
+  plot_motif_density(title="GENCODE Proximal Sites", col_values=COLOR_VALS_EXTRA)
+```
+
+### Non-Distal Cleavage Sites (`r length(gr_nondistal_gc)` sites)
+```{r plot_nondistal_gc_extra, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_nondistal_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+df_caatta <- get_centered_motif_sites(motif="CAATTA", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt, df_caatta) %>%
+  plot_motif_density(title="GENCODE Non-Distal Sites", col_values=COLOR_VALS_EXTRA)
+```
+
+
+### Distal Cleavage Sites (`r length(gr_distal_gc)` sites)
+```{r plot_distal_gc_extra, fig.width=8, fig.height=6, warning=FALSE}
+seqs <- getSeq(BSgenome.Hsapiens.UCSC.hg38, gr_distal_gc)
+
+df_tgta <- get_centered_motif_sites("TGTA", seqs)
+df_pas <- get_centered_motif_sites(motif="AWTAAA", seqs)
+df_tgtgt <- get_centered_motif_sites(motif="TGTST", seqs)
+df_caatta <- get_centered_motif_sites(motif="CAATTA", seqs)
+
+rbind(df_tgta, df_pas, df_tgtgt, df_caatta) %>%
+  plot_motif_density(title="GENCODE Distal Sites", col_values=COLOR_VALS_EXTRA)
+```
+
+
+---
+
+# Session Info
+```{r sesh_info, echo=FALSE}
+sessionInfo()
+```
