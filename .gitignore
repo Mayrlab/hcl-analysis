@@ -10,3 +10,9 @@ scripts/utrome.e*
 *lilac*
 *xbio*
 metadata/HCL_Fig1_cell_Info.xlsx
+scratch/
+qc/barcodes/*.png
+qc/barcodes/*.tsv
+qc/fastqc_bam/
+qc/multiqc*
+*.ipynb_checkpoints

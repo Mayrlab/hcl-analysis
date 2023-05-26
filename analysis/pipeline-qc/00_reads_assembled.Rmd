@@ -41,6 +41,9 @@ set.seed(20210818)
 df_pear <- read_csv("qc/pear/pear_summary.csv", col_types='ciiiiddd')
 ```
 
+In total we have `r format(sum(df_pear$cts_assembled), big.mark=",")`. With a mean
+percent of `r sprintf("%0.1f",mean(df_pear$pct_assembled))` $\pm$ `r sprintf("%0.1f",sd(df_pear$pct_assembled))`.
+
 ## Preprocessing
 ```{r prepare_data}
 df_pear %<>%
