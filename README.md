@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/645059782.svg)](https://zenodo.org/doi/10.5281/zenodo.10892181)
+
 ## Overview
 
 This repository provides analysis of the human cleavage site annotation resulting from running 
