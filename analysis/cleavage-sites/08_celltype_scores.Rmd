@@ -23,6 +23,7 @@ EPSILON = 30
 TPM = 5
 N_CTS_LOW = 10
 N_CTS_HIGH = 80
+MIN_MAJOR=0.10
 
 FILE_UTROME = sprintf("data/granges/utrome_gr_txs.e%d.t%d.gc39.pas3.f0.9999.w500.Rds", EPSILON, TPM)
 FILE_BED = sprintf("data/bed/celltypes/celltypes.e%d.t%d.bed.gz", EPSILON, TPM)
@@ -130,10 +131,40 @@ df_celltypes %>%
     theme_bw()
 ```
 
+## Major vs Minor Sites
+```{r fig_major_sites, fig.width=4, fig.height=4}
+df_gene_sites <- df_celltypes %>%
+    filter(n_celltypes_gene > 0) %>%
+    group_by(gene_id) %>%
+    summarize(n_major=sum(frac_celltypes >= MIN_MAJOR),
+              n_minor=sum(frac_celltypes < MIN_MAJOR)) %>%
+    mutate(n_major_lbl=ifelse(n_major > 5, "6+", as.character(n_major)),
+           n_minor_lbl=ifelse(n_minor > 5, "6+", as.character(n_minor)))
+
+df_counts <- df_gene_sites %>%
+  group_by(n_major_lbl) %>%
+  summarize(n=n())
+
+df_gene_sites %>%
+  mutate(utr_type=ifelse(n_major > 1, "multi", "single")) %>%
+  ggplot(aes(x=n_major_lbl)) +
+  geom_histogram(aes(fill=utr_type), stat='count', color='black') +
+  geom_text(data=df_counts, mapping=aes(label=n, y=n+500)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_manual(values=c("#6E90BB", "lightgrey")) +
+  labs(x="Major CS per gene", y="Genes") +
+  guides(fill='none') +
+  cowplot::theme_minimal_hgrid()
+
+ggsave("img/sq/sup1j-n-major-cs-pct10.human.pdf", width=4, height=4, dpi=300)
+```
+
+
 ## Export
 ```{r export}
 write_tsv(df_celltypes, "data/celltype_score/celltype_scores.tsv")
 ```
+
 
 ---
 
